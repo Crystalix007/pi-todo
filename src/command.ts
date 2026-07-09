@@ -366,8 +366,6 @@ class TodoViewer {
 			const cur = SORT_MODES.indexOf(this.sortMode);
 			const next = SORT_MODES[(cur + 1) % SORT_MODES.length];
 			this.sortMode = next ?? "creation";
-			this.cursor = 0;
-			this.scroll = 0;
 			if (this.subtreeRootId != null && this.fullListPath != null) {
 				this.openSubtree(this.fullListPath, this.subtreeRootId);
 			} else {
@@ -376,16 +374,16 @@ class TodoViewer {
 						? this.buildLists()
 						: this.buildTree(this.content.title);
 			}
+			this.clampCursor();
 		} else if (matchesKey(data, "d")) {
 			if (this.content.title !== "lists") {
 				this.showDescriptions = !this.showDescriptions;
-				this.cursor = 0;
-				this.scroll = 0;
 				if (this.subtreeRootId != null && this.fullListPath != null) {
 					this.openSubtree(this.fullListPath, this.subtreeRootId);
 				} else {
 					this.content = this.buildTree(this.content.title);
 				}
+				this.clampCursor();
 			}
 		} else if (matchesKey(data, "b")) {
 			if (this.subtreeRootId != null && this.fullListPath != null) {
@@ -444,6 +442,16 @@ class TodoViewer {
 		}
 	}
 
+	private clampCursor(): void {
+		const sel = this.content.selectable;
+		if (sel.length === 0) {
+			this.cursor = 0;
+			return;
+		}
+		this.cursor = Math.min(this.cursor, sel.length - 1);
+		this.clampScroll();
+	}
+
 	private clampScroll(): void {
 		const sel = this.content.selectable;
 		if (sel.length === 0) return;
@@ -472,10 +480,7 @@ class TodoViewer {
 	// ---- selectable computation ----
 
 	/** Compute which line indices in a themed tree body are task lines. */
-	private computeTreeSelectable(
-		tree: TaskNode[],
-		opts: ShowOpts,
-	): number[] {
+	private computeTreeSelectable(tree: TaskNode[], opts: ShowOpts): number[] {
 		const flat = flatten(tree, opts);
 		const selectable: number[] = [];
 		let idx = 1; // skip header line (index 0)
