@@ -13,7 +13,14 @@ import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 import type { ListSummary, TodoDb } from "./db.ts";
 import { parseListPath } from "./paths.ts";
-import { renderLists, renderTree, themedTreeLines } from "./render.ts";
+import {
+	renderLists,
+	renderTree,
+	themedTreeLines,
+	sortTree,
+} from "./render.ts";
+import type { SortMode } from "./render.ts";
+import { SORT_MODES, SORT_LABEL } from "./render.ts";
 
 interface TodoCommandDeps {
 	getDb: () => Promise<TodoDb>;
@@ -126,6 +133,7 @@ class TodoViewer {
 	private cursor = 0; // index into content.selectable
 	private scroll = 0; // line scroll offset
 	private stack: string[] = []; // list paths visited (for back navigation)
+	private sortMode: SortMode = "creation";
 
 	constructor(
 		db: TodoDb,
@@ -198,11 +206,17 @@ class TodoViewer {
 				title: path,
 			};
 		}
+		sortTree(data.tree, this.sortMode);
 		const body = themedTreeLines(
 			{ tree: data.tree, counts: data.counts, path, title: data.list.title },
 			this.theme,
 		);
-		const lines = [...body, "", this.dim("↑/↓ scroll · Backspace/Esc back")];
+		const sortLabel = SORT_LABEL[this.sortMode];
+		const lines = [
+			...body,
+			"",
+			this.dim(`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel}`),
+		];
 		return { lines, selectable: [], listPaths: [], title: path };
 	}
 
@@ -241,6 +255,14 @@ class TodoViewer {
 			const prev = this.stack.pop();
 			if (prev && prev !== "lists") this.open(prev);
 			else this.open(null);
+		} else if (matchesKey(data, "s")) {
+			const cur = SORT_MODES.indexOf(this.sortMode);
+			const next = SORT_MODES[(cur + 1) % SORT_MODES.length];
+			this.sortMode = next ?? "creation";
+			this.cursor = 0;
+			this.scroll = 0;
+			const lastPath = this.stack.at(-1);
+			this.open(lastPath ?? null);
 		} else if (
 			matchesKey(data, "escape") ||
 			matchesKey(data, "ctrl+c") ||

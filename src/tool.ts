@@ -386,7 +386,12 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
 	if (p.id === undefined || p.id === null)
 		throw new Error("'id' is required for action 'update'.");
-	if (p.text === undefined && p.note === undefined && p.status === undefined && p.priority === undefined) {
+	if (
+		p.text === undefined &&
+		p.note === undefined &&
+		p.status === undefined &&
+		p.priority === undefined
+	) {
 		throw new Error(
 			"Action 'update' needs at least one of: text, note, status, priority.",
 		);

@@ -7,6 +7,7 @@
  */
 
 import type { Counts, ListSummary, Priority, Status, TaskNode } from "./db.ts";
+import { PRIORITY_ORDER } from "./db.ts";
 
 export const DEFAULT_MAX_TREE_LINES = 300;
 
@@ -44,15 +45,56 @@ export interface TreeView {
 	title?: string | null;
 }
 
+export type SortMode = "creation" | "completion" | "priority";
+
+export const SORT_MODES: SortMode[] = ["creation", "completion", "priority"];
+
+export const SORT_LABEL: Record<SortMode, string> = {
+	creation: "creation",
+	completion: "completion",
+	priority: "priority",
+};
+
 export interface ShowOpts {
 	format?: "tree" | "flat";
 	statusFilter?: Status;
 	maxLines?: number;
+	sort?: SortMode;
 }
 
 export interface RenderedText {
 	text: string;
 	truncated: boolean;
+}
+
+const STATUS_ORDER: Record<Status, number> = {
+	done: 3,
+	in_progress: 2,
+	pending: 1,
+};
+
+/** Recursively sort a task tree by the given mode. Mutates in place. */
+export function sortTree(tree: TaskNode[], mode: SortMode): void {
+	const cmp =
+		mode === "completion"
+			? (a: TaskNode, b: TaskNode): number => {
+					const s = STATUS_ORDER[b.status] - STATUS_ORDER[a.status];
+					if (s !== 0) return s;
+					const p = PRIORITY_ORDER[b.priority] - PRIORITY_ORDER[a.priority];
+					if (p !== 0) return p;
+					return a.id - b.id;
+				}
+			: mode === "priority"
+				? (a: TaskNode, b: TaskNode): number => {
+						const p = PRIORITY_ORDER[b.priority] - PRIORITY_ORDER[a.priority];
+						if (p !== 0) return p;
+						const s = STATUS_ORDER[b.status] - STATUS_ORDER[a.status];
+						if (s !== 0) return s;
+						return a.id - b.id;
+					}
+				: () => 0; // creation: keep DB order
+	tree.sort(cmp);
+	for (const n of tree) sortTree(n.children, mode);
 }
 
 /** Compute whole-list counts by walking the tree. */
@@ -111,7 +153,9 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 
 function plainLine(l: Line, indented: boolean): string[] {
 	const indent = indented ? "  ".repeat(l.depth) : "";
-	const lines = [`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}`];
+	const lines = [
+		`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}`,
+	];
 	if (l.note) lines.push(`${indent}  · ${sanitize(l.note)}`);
 	return lines;
 }

@@ -19,7 +19,12 @@ export type Status = "pending" | "in_progress" | "done";
 export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 /** Numeric weight for sorting: higher = more important. */
-export const PRIORITY_ORDER: Record<Priority, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+export const PRIORITY_ORDER: Record<Priority, number> = {
+	critical: 4,
+	high: 3,
+	medium: 2,
+	low: 1,
+};
 
 export interface TaskNode {
 	id: number;
@@ -595,14 +600,19 @@ export class TodoDb {
 
 	// ---- next-task ----
 
-	nextTaskWithin(listId: number, status: Status): (TreeRow & { list_id: number }) | null {
+	nextTaskWithin(
+		listId: number,
+		status: Status,
+	): (TreeRow & { list_id: number }) | null {
 		const row = this.stmts.nextWithin.get(listId, status) as
 			| (TreeRow & { list_id: number })
 			| undefined;
 		return row ?? null;
 	}
 
-	nextTaskAcross(status: Status): (TreeRow & { scope: string; name: string }) | null {
+	nextTaskAcross(
+		status: Status,
+	): (TreeRow & { scope: string; name: string }) | null {
 		const row = this.stmts.nextAcross.get(status) as
 			| (TreeRow & { scope: string; name: string })
 			| undefined;
