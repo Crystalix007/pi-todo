@@ -33,6 +33,7 @@ export interface TaskNode {
 	priority: Priority;
 	note?: string | null;
 	tags?: string[] | null;
+	description?: string | null;
 	children: TaskNode[];
 }
 
@@ -64,6 +65,7 @@ export interface InsertSpec {
 	priority?: Priority;
 	note?: string | null;
 	tags?: string[] | null;
+	description?: string | null;
 	parentId: number | null;
 }
 
@@ -73,6 +75,7 @@ export interface UpdateSpec {
 	status?: Status;
 	priority?: Priority;
 	tags?: string[] | null;
+	description?: string | null | undefined; // null/"" clears; undefined = leave as-is
 	cascade?: boolean;
 }
 
@@ -92,6 +95,7 @@ interface TreeRow {
 	priority: Priority;
 	note: string | null;
 	tags: string | null;
+	description: string | null;
 	depth: number;
 }
 
@@ -146,6 +150,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'pending',
   note TEXT,
   tags TEXT,
+  description TEXT,
   priority TEXT NOT NULL DEFAULT 'medium',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -155,15 +160,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 `;
 
 const TREE_SQL = `
-WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, tags, depth, path) AS (
-  SELECT id, parent_id, ord, text, status, priority, note, tags, 0, printf('%012d', ord)
+WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, tags, description, depth, path) AS (
+  SELECT id, parent_id, ord, text, status, priority, note, tags, description, 0, printf('%012d', ord)
     FROM tasks WHERE list_id = ? AND parent_id IS NULL
   UNION ALL
-  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, c.tags, p.depth + 1,
+  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, c.tags, c.description, p.depth + 1,
          p.path || '/' || printf('%012d', c.ord)
     FROM tasks c JOIN t p ON c.parent_id = p.id
 )
-SELECT id, parent_id, ord, text, status, priority, note, tags, depth FROM t ORDER BY path
+SELECT id, parent_id, ord, text, status, priority, note, tags, description, depth FROM t ORDER BY path
 `;
 
 const DESCENDANTS_SQL = `
@@ -233,8 +238,17 @@ async function initTodoDb(): Promise<TodoDb> {
 	conn.exec("PRAGMA foreign_keys = ON;");
 	conn.exec("PRAGMA busy_timeout = 5000;");
 	conn.exec(SCHEMA_SQL);
-	// Migration: add tags column to existing databases.
-	try { conn.exec("ALTER TABLE tasks ADD COLUMN tags TEXT"); } catch { /* column exists */ }
+	// Migration: add columns to existing databases.
+	try {
+		conn.exec("ALTER TABLE tasks ADD COLUMN tags TEXT");
+	} catch {
+		/* column exists */
+	}
+	try {
+		conn.exec("ALTER TABLE tasks ADD COLUMN description TEXT");
+	} catch {
+		/* column exists */
+	}
 	return new TodoDb(conn);
 }
 
@@ -269,10 +283,10 @@ export class TodoDb {
 			deleteList: conn.prepare("DELETE FROM lists WHERE id = ?"),
 
 			insertTask: conn.prepare(
-				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, tags, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, tags, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			),
-			getTask: conn.prepare(
-				"SELECT id, list_id, parent_id, ord, text, status, priority, note, tags FROM tasks WHERE id = ?",
+				getTask: conn.prepare(
+						"SELECT id, list_id, parent_id, ord, text, status, priority, note, tags, description FROM tasks WHERE id = ?",
 			),
 			updateText: conn.prepare(
 				"UPDATE tasks SET text = ?, updated_at = ? WHERE id = ?",
@@ -289,7 +303,10 @@ export class TodoDb {
 			setTags: conn.prepare(
 				"UPDATE tasks SET tags = ?, updated_at = ? WHERE id = ?",
 			),
-			setParent: conn.prepare(
+				setDescription: conn.prepare(
+						"UPDATE tasks SET description = ?, updated_at = ? WHERE id = ?",
+			),
+				setParent: conn.prepare(
 				"UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
 			),
 			setOrd: conn.prepare("UPDATE tasks SET ord = ? WHERE id = ?"),
@@ -417,6 +434,7 @@ export class TodoDb {
 			spec.status,
 			spec.note ?? null,
 			tagsStr,
+			spec.description ?? null,
 			spec.priority ?? "medium",
 			now,
 			now,
@@ -437,6 +455,7 @@ export class TodoDb {
 		status: Status;
 		priority: Priority;
 		note: string | null;
+		description: string | null;
 	} {
 		const row = this.stmts.getTask.get(id) as
 			| {
@@ -448,6 +467,7 @@ export class TodoDb {
 					status: Status;
 					priority: Priority;
 					note: string | null;
+					description: string | null;
 			  }
 			| undefined;
 		if (!row || row.list_id !== listId) {
@@ -481,6 +501,10 @@ export class TodoDb {
 			const tagsStr =
 				spec.tags && spec.tags.length > 0 ? spec.tags.join(",") : null;
 			this.stmts.setTags.run(tagsStr, now, id);
+		}
+		if (spec.description !== undefined) {
+			const descVal = spec.description === "" ? null : spec.description;
+			this.stmts.setDescription.run(descVal, now, id);
 		}
 		this.touchList(listId);
 	}
@@ -595,6 +619,7 @@ export class TodoDb {
 				priority: r.priority,
 				note: r.note ?? undefined,
 				tags: parseTags(r.tags),
+				description: r.description ?? undefined,
 				children: [],
 			});
 		}

@@ -56,6 +56,7 @@ interface TaskItemInput {
 	priority?: Priority;
 	note?: string;
 	tags?: string[];
+	description?: string;
 	underRef?: string;
 }
 
@@ -70,6 +71,7 @@ export interface TodoParamsInput {
 	text?: string;
 	note?: string;
 	tags?: string[];
+	description?: string;
 	status?: Status;
 	priority?: Priority;
 	cascade?: boolean;
@@ -107,7 +109,14 @@ const TaskItem = Type.Object({
 	),
 	tags: Type.Optional(
 		Type.Array(Type.String(), {
-			description: "Optional tags (e.g. 'blocked', 'waiting-on-input'). Signal that a task cannot be completed yet.",
+			description:
+				"Optional tags (e.g. 'blocked', 'waiting-on-input'). Signal that a task cannot be completed yet.",
+		}),
+	),
+	description: Type.Optional(
+		Type.String({
+			description:
+				"Optional multi-line description with elaboration on what the task involves.",
 		}),
 	),
 });
@@ -158,6 +167,12 @@ export const TodoToolParams = Type.Object({
 		Type.Array(Type.String(), {
 			description:
 				"(add|update) Optional tags for the task (e.g. 'blocked', 'waiting-on-input'). Pass empty array [] to clear.",
+		}),
+	),
+	description: Type.Optional(
+		Type.String({
+			description:
+				"(add|update) Optional multi-line description. Pass empty string '' to clear.",
 		}),
 	),
 	cascade: Type.Optional(
@@ -364,6 +379,7 @@ async function doAdd(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 				priority: it.priority ?? "medium",
 				note: it.note ?? null,
 				tags: it.tags ?? null,
+				description: it.description ?? null,
 				parentId,
 			};
 			const newId = db.insertTask(list.id, spec);
@@ -405,10 +421,11 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		p.note === undefined &&
 		p.status === undefined &&
 		p.priority === undefined &&
-		p.tags === undefined
+		p.tags === undefined &&
+		p.description === undefined
 	) {
 		throw new Error(
-			"Action 'update' needs at least one of: text, note, status, priority, tags.",
+			"Action 'update' needs at least one of: text, note, status, priority, tags, description.",
 		);
 	}
 	const spec: UpdateSpec = {};
@@ -420,6 +437,7 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	if (p.status !== undefined) spec.status = p.status;
 	if (p.priority !== undefined) spec.priority = p.priority;
 	if (p.tags !== undefined) spec.tags = p.tags;
+	if (p.description !== undefined) spec.description = p.description;
 	if (p.cascade !== undefined) spec.cascade = p.cascade;
 
 	const result = db.txn(() => {
@@ -660,12 +678,12 @@ async function doNext(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 				priority: result.task.priority,
 				note: result.task.note,
 				tags: result.task.tags
-								? result.task.tags.split(",").filter(Boolean)
-								: undefined,
+					? result.task.tags.split(",").filter(Boolean)
+					: undefined,
 			},
 		},
 		content,
-);
+	);
 }
 
 // ---- details helpers ----

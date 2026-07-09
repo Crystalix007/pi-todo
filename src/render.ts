@@ -60,6 +60,7 @@ export interface ShowOpts {
 	statusFilter?: Status;
 	maxLines?: number;
 	sort?: SortMode;
+	showDescriptions?: boolean;
 }
 
 export interface RenderedText {
@@ -127,6 +128,7 @@ interface Line {
 	priority: Priority;
 	note?: string | null;
 	tags?: string[] | null;
+	description?: string | null;
 }
 
 /** Flatten the tree into display lines (depth-first, sibling order). */
@@ -144,6 +146,7 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 					priority: n.priority,
 					note: n.note,
 					tags: n.tags,
+					description: n.description,
 				});
 			}
 			walk(n.children, filter ? depth : depth + 1);
@@ -158,12 +161,24 @@ function formatTagsPlain(tags: string[] | undefined | null): string {
 	return ` {${tags.join("} {")}}`;
 }
 
+function formatDescPlain(l: Line, indent: string): string[] {
+	const desc = l.description;
+	if (!desc || !desc.trim()) return [];
+	const pad = `${indent}  ▸ `;
+	const lines = desc.split("\n");
+	const capped = lines.slice(0, 3);
+	const out = capped.map((s) => `${pad}${sanitize(s)}`);
+	if (lines.length > 3) out.push(`${pad}…`);
+	return out;
+}
+
 function plainLine(l: Line, indented: boolean): string[] {
 	const indent = indented ? "  ".repeat(l.depth) : "";
 	const lines = [
 		`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}${formatTagsPlain(l.tags)}`,
 	];
 	if (l.note) lines.push(`${indent}  · ${sanitize(l.note)}`);
+	for (const dl of formatDescPlain(l, indent)) lines.push(dl);
 	return lines;
 }
 
@@ -265,6 +280,7 @@ export function themedTreeLines(
 		return out;
 	}
 	const flat = opts.format === "flat" || opts.statusFilter != null;
+	const showDesc = opts.showDescriptions === true;
 	for (const l of flatten(view.tree, opts)) {
 		const indent = flat ? "" : "  ".repeat(l.depth);
 		const glyph = theme.fg(
@@ -285,9 +301,20 @@ export function themedTreeLines(
 		const prio = prioTag ? theme.fg(PRIORITY_COLOR[l.priority], prioTag) : "";
 		const tagStr = formatTagsPlain(l.tags);
 		const tags = tagStr ? theme.fg("info", tagStr) : "";
-		out.push(`${indent}${glyph} ${id} ${text}${prio}${tags}`);
+		const hasDesc = l.description != null && l.description.trim() !== "";
+		const descIndicator = showDesc ? "" : hasDesc ? theme.fg("dim", " [⋯]") : "";
+		out.push(`${indent}${glyph} ${id} ${text}${prio}${tags}${descIndicator}`);
 		if (l.note)
 			out.push(`${indent}  ${theme.fg("dim", `· ${sanitize(l.note)}`)}`);
+		if (showDesc && hasDesc) {
+			const pad = `${indent}  `;
+			const descLines = l.description!.split("\n");
+			const capped = descLines.slice(0, 5);
+			for (const dl of capped)
+				out.push(`${pad}${theme.fg("dim", `▸ ${sanitize(dl)}`)}`);
+			if (descLines.length > 5)
+				out.push(`${pad}${theme.fg("dim", "▸ …")}`);
+		}
 	}
 	return out;
 }

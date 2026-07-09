@@ -134,6 +134,7 @@ class TodoViewer {
 	private scroll = 0; // line scroll offset
 	private stack: string[] = []; // list paths visited (for back navigation)
 	private sortMode: SortMode = "creation";
+	private showDescriptions = false;
 
 	constructor(
 		db: TodoDb,
@@ -210,12 +211,14 @@ class TodoViewer {
 		const body = themedTreeLines(
 			{ tree: data.tree, counts: data.counts, path, title: data.list.title },
 			this.theme,
+			{ showDescriptions: this.showDescriptions },
 		);
 		const sortLabel = SORT_LABEL[this.sortMode];
+		const descStatus = this.showDescriptions ? "on" : "off";
 		const lines = [
 			...body,
 			"",
-			this.dim(`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel}`),
+			this.dim(`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel} · d desc: ${descStatus}`),
 		];
 		return { lines, selectable: [], listPaths: [], title: path };
 	}
@@ -265,6 +268,13 @@ class TodoViewer {
 				this.content.title === "lists"
 					? this.buildLists()
 					: this.buildTree(this.content.title);
+		} else if (matchesKey(data, "d")) {
+			if (this.content.title !== "lists") {
+				this.showDescriptions = !this.showDescriptions;
+				this.cursor = 0;
+				this.scroll = 0;
+				this.content = this.buildTree(this.content.title);
+			}
 		} else if (
 			matchesKey(data, "escape") ||
 			matchesKey(data, "ctrl+c") ||
