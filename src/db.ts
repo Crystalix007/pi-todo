@@ -32,6 +32,7 @@ export interface TaskNode {
 	status: Status;
 	priority: Priority;
 	note?: string | null;
+	tags?: string[] | null;
 	children: TaskNode[];
 }
 
@@ -62,6 +63,7 @@ export interface InsertSpec {
 	status: Status;
 	priority?: Priority;
 	note?: string | null;
+	tags?: string[] | null;
 	parentId: number | null;
 }
 
@@ -70,6 +72,7 @@ export interface UpdateSpec {
 	note?: string | null | undefined; // null/"" clears the note; undefined = leave as-is
 	status?: Status;
 	priority?: Priority;
+	tags?: string[] | null;
 	cascade?: boolean;
 }
 
@@ -88,6 +91,7 @@ interface TreeRow {
 	status: Status;
 	priority: Priority;
 	note: string | null;
+	tags: string | null;
 	depth: number;
 }
 
@@ -141,6 +145,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   note TEXT,
+  tags TEXT,
   priority TEXT NOT NULL DEFAULT 'medium',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -150,15 +155,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 `;
 
 const TREE_SQL = `
-WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, depth, path) AS (
-  SELECT id, parent_id, ord, text, status, priority, note, 0, printf('%012d', ord)
+WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, tags, depth, path) AS (
+  SELECT id, parent_id, ord, text, status, priority, note, tags, 0, printf('%012d', ord)
     FROM tasks WHERE list_id = ? AND parent_id IS NULL
   UNION ALL
-  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, p.depth + 1,
+  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, c.tags, p.depth + 1,
          p.path || '/' || printf('%012d', c.ord)
     FROM tasks c JOIN t p ON c.parent_id = p.id
 )
-SELECT id, parent_id, ord, text, status, priority, note, depth FROM t ORDER BY path
+SELECT id, parent_id, ord, text, status, priority, note, tags, depth FROM t ORDER BY path
 `;
 
 const DESCENDANTS_SQL = `
@@ -228,6 +233,8 @@ async function initTodoDb(): Promise<TodoDb> {
 	conn.exec("PRAGMA foreign_keys = ON;");
 	conn.exec("PRAGMA busy_timeout = 5000;");
 	conn.exec(SCHEMA_SQL);
+	// Migration: add tags column to existing databases.
+	try { conn.exec("ALTER TABLE tasks ADD COLUMN tags TEXT"); } catch { /* column exists */ }
 	return new TodoDb(conn);
 }
 
@@ -262,10 +269,10 @@ export class TodoDb {
 			deleteList: conn.prepare("DELETE FROM lists WHERE id = ?"),
 
 			insertTask: conn.prepare(
-				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, tags, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			),
 			getTask: conn.prepare(
-				"SELECT id, list_id, parent_id, ord, text, status, priority, note FROM tasks WHERE id = ?",
+				"SELECT id, list_id, parent_id, ord, text, status, priority, note, tags FROM tasks WHERE id = ?",
 			),
 			updateText: conn.prepare(
 				"UPDATE tasks SET text = ?, updated_at = ? WHERE id = ?",
@@ -278,6 +285,9 @@ export class TodoDb {
 			),
 			updatePriority: conn.prepare(
 				"UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?",
+			),
+			setTags: conn.prepare(
+				"UPDATE tasks SET tags = ?, updated_at = ? WHERE id = ?",
 			),
 			setParent: conn.prepare(
 				"UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
@@ -397,6 +407,8 @@ export class TodoDb {
 	insertTask(listId: number, spec: InsertSpec): number {
 		const ord = this.nextOrd(listId, spec.parentId);
 		const now = Date.now();
+		const tagsStr =
+			spec.tags && spec.tags.length > 0 ? spec.tags.join(",") : null;
 		const res = this.stmts.insertTask.run(
 			listId,
 			spec.parentId,
@@ -404,6 +416,7 @@ export class TodoDb {
 			spec.text,
 			spec.status,
 			spec.note ?? null,
+			tagsStr,
 			spec.priority ?? "medium",
 			now,
 			now,
@@ -463,6 +476,11 @@ export class TodoDb {
 		}
 		if (spec.priority !== undefined) {
 			this.stmts.updatePriority.run(spec.priority, now, id);
+		}
+		if (spec.tags !== undefined) {
+			const tagsStr =
+				spec.tags && spec.tags.length > 0 ? spec.tags.join(",") : null;
+			this.stmts.setTags.run(tagsStr, now, id);
 		}
 		this.touchList(listId);
 	}
@@ -565,6 +583,8 @@ export class TodoDb {
 
 	fetchTree(listId: number): TaskNode[] {
 		const rows = this.stmts.tree.all(listId) as TreeRow[];
+		const parseTags = (raw: string | null): string[] | undefined =>
+			raw ? raw.split(",").filter(Boolean) : undefined;
 		const nodes = new Map<number, TaskNode>();
 		const roots: TaskNode[] = [];
 		for (const r of rows) {
@@ -574,6 +594,7 @@ export class TodoDb {
 				status: r.status,
 				priority: r.priority,
 				note: r.note ?? undefined,
+				tags: parseTags(r.tags),
 				children: [],
 			});
 		}

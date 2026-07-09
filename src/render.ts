@@ -126,6 +126,7 @@ interface Line {
 	text: string;
 	priority: Priority;
 	note?: string | null;
+	tags?: string[] | null;
 }
 
 /** Flatten the tree into display lines (depth-first, sibling order). */
@@ -142,6 +143,7 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 					text: n.text,
 					priority: n.priority,
 					note: n.note,
+					tags: n.tags,
 				});
 			}
 			walk(n.children, filter ? depth : depth + 1);
@@ -151,10 +153,15 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 	return out;
 }
 
+function formatTagsPlain(tags: string[] | undefined | null): string {
+	if (!tags || tags.length === 0) return "";
+	return ` {${tags.join("} {")}}`;
+}
+
 function plainLine(l: Line, indented: boolean): string[] {
 	const indent = indented ? "  ".repeat(l.depth) : "";
 	const lines = [
-		`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}`,
+		`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}${formatTagsPlain(l.tags)}`,
 	];
 	if (l.note) lines.push(`${indent}  · ${sanitize(l.note)}`);
 	return lines;
@@ -276,7 +283,9 @@ export function themedTreeLines(
 			l.glyph === "[x]" ? theme.fg("dim", rawText) : theme.fg("text", rawText);
 		const prioTag = PRIORITY_TAG[l.priority];
 		const prio = prioTag ? theme.fg(PRIORITY_COLOR[l.priority], prioTag) : "";
-		out.push(`${indent}${glyph} ${id} ${text}${prio}`);
+		const tagStr = formatTagsPlain(l.tags);
+		const tags = tagStr ? theme.fg("info", tagStr) : "";
+		out.push(`${indent}${glyph} ${id} ${text}${prio}${tags}`);
 		if (l.note)
 			out.push(`${indent}  ${theme.fg("dim", `· ${sanitize(l.note)}`)}`);
 	}
