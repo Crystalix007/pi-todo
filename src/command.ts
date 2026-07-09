@@ -15,12 +15,13 @@ import type { ListSummary, TaskNode, TodoDb } from "./db.ts";
 import { parseListPath } from "./paths.ts";
 import {
 	countsOfTree,
+	flatten,
 	renderLists,
 	renderTree,
 	themedTreeLines,
 	sortTree,
 } from "./render.ts";
-import type { SortMode } from "./render.ts";
+import type { SortMode, ShowOpts } from "./render.ts";
 import { SORT_MODES, SORT_LABEL } from "./render.ts";
 
 interface TodoCommandDeps {
@@ -253,6 +254,7 @@ class TodoViewer {
 		}
 		sortTree(data.tree, this.sortMode);
 		const rootText = data.tree.length > 0 ? data.tree[0]!.text : undefined;
+		const opts: ShowOpts = { showDescriptions: this.showDescriptions };
 		const body = themedTreeLines(
 			{
 				tree: data.tree,
@@ -262,20 +264,21 @@ class TodoViewer {
 				rootTaskText: rootText,
 			},
 			this.theme,
-			{ showDescriptions: this.showDescriptions },
+			opts,
 		);
+		const selectable = this.computeTreeSelectable(data.tree, opts);
 		const sortLabel = SORT_LABEL[this.sortMode];
 		const descStatus = this.showDescriptions ? "on" : "off";
 		const lines = [
 			...body,
 			"",
 			this.dim(
-				`↑/↓ scroll · b back to full list · s sort: ${sortLabel} · d desc: ${descStatus}`,
+				`↑/↓ select · b back to full list · s sort: ${sortLabel} · d desc: ${descStatus}`,
 			),
 		];
 		return {
 			lines,
-			selectable: [],
+			selectable,
 			listPaths: [],
 			title: `${fullPath}#${rootTaskId}`,
 		};
@@ -305,21 +308,23 @@ class TodoViewer {
 			};
 		}
 		sortTree(data.tree, this.sortMode);
+		const opts: ShowOpts = { showDescriptions: this.showDescriptions };
 		const body = themedTreeLines(
 			{ tree: data.tree, counts: data.counts, path, title: data.list.title },
 			this.theme,
-			{ showDescriptions: this.showDescriptions },
+			opts,
 		);
+		const selectable = this.computeTreeSelectable(data.tree, opts);
 		const sortLabel = SORT_LABEL[this.sortMode];
 		const descStatus = this.showDescriptions ? "on" : "off";
 		const lines = [
 			...body,
 			"",
 			this.dim(
-				`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel} · d desc: ${descStatus}`,
+				`↑/↓ select · Backspace/Esc back · s sort: ${sortLabel} · d desc: ${descStatus}`,
 			),
 		];
-		return { lines, selectable: [], listPaths: [], title: path };
+		return { lines, selectable, listPaths: [], title: path };
 	}
 
 	handleInput(data: string): void {
@@ -414,11 +419,11 @@ class TodoViewer {
 			let line = this.content.lines[i] ?? "";
 			if (sel.length > 0 && sel[this.cursor] === i) {
 				if (this.content.listPaths.length > 0) {
-						// List view: replace leading "  " with colored "▸ "
-						line = `${this.theme.fg("accent", "▸")} ${line.slice(1)}`;
+					// List view: replace leading "  " with colored "▸ "
+					line = `${this.theme.fg("accent", "▸")} ${line.slice(1)}`;
 				} else {
-						// Tree view: prepend colored cursor marker
-						line = `${this.theme.fg("accent", "▸")}${line}`;
+					// Tree view: prepend colored cursor marker
+					line = `${this.theme.fg("accent", "▸")}${line}`;
 				}
 			}
 			view.push(truncateToWidth(line, width));
@@ -462,5 +467,30 @@ class TodoViewer {
 	}
 	private accent(s: string): string {
 		return this.theme.fg("accent", s);
+	}
+
+	// ---- selectable computation ----
+
+	/** Compute which line indices in a themed tree body are task lines. */
+	private computeTreeSelectable(
+		tree: TaskNode[],
+		opts: ShowOpts,
+	): number[] {
+		const flat = flatten(tree, opts);
+		const selectable: number[] = [];
+		let idx = 1; // skip header line (index 0)
+		const showDesc = opts.showDescriptions === true;
+		for (const l of flat) {
+			selectable.push(idx);
+			idx += 1; // task line
+			if (l.note) idx += 1; // note line
+			if (showDesc && l.description?.trim()) {
+				const lines = l.description.split("\n");
+				const capped = Math.min(lines.length, 5);
+				idx += capped;
+				if (lines.length > 5) idx += 1; // ellipsis
+			}
+		}
+		return selectable;
 	}
 }

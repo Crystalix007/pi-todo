@@ -136,7 +136,7 @@ interface Line {
 }
 
 /** Flatten the tree into display lines (depth-first, sibling order). */
-function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
+export function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 	const out: Line[] = [];
 	const filter = opts.statusFilter;
 	const walk = (nodes: TaskNode[], depth: number): void => {
