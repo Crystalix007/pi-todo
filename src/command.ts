@@ -413,7 +413,13 @@ class TodoViewer {
 		) {
 			let line = this.content.lines[i] ?? "";
 			if (sel.length > 0 && sel[this.cursor] === i) {
-				line = this.theme.fg("accent", line);
+				if (this.content.listPaths.length > 0) {
+						// List view: replace leading "  " with colored "▸ "
+						line = `${this.theme.fg("accent", "▸")} ${line.slice(1)}`;
+				} else {
+						// Tree view: prepend colored cursor marker
+						line = `${this.theme.fg("accent", "▸")}${line}`;
+				}
 			}
 			view.push(truncateToWidth(line, width));
 		}
