@@ -6,7 +6,7 @@
  * Semantic truncation keeps output well under pi's 50KB/2000-line limit.
  */
 
-import type { Counts, ListSummary, Status, TaskNode } from "./db.ts";
+import type { Counts, ListSummary, Priority, Status, TaskNode } from "./db.ts";
 
 export const DEFAULT_MAX_TREE_LINES = 300;
 
@@ -27,6 +27,14 @@ export const GLYPH: Record<Status, string> = {
 	pending: "[ ]",
 	in_progress: "[~]",
 	done: "[x]",
+};
+
+/** One-char priority tags shown at end of task lines (medium is the default — omitted). */
+export const PRIORITY_TAG: Record<Priority, string> = {
+	critical: " [!]",
+	high: " [↑]",
+	medium: "",
+	low: " [↓]",
 };
 
 export interface TreeView {
@@ -74,6 +82,7 @@ interface Line {
 	glyph: string;
 	id: number;
 	text: string;
+	priority: Priority;
 	note?: string | null;
 }
 
@@ -89,6 +98,7 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 					glyph: GLYPH[n.status],
 					id: n.id,
 					text: n.text,
+					priority: n.priority,
 					note: n.note,
 				});
 			}
@@ -101,7 +111,7 @@ function flatten(tree: TaskNode[], opts: ShowOpts): Line[] {
 
 function plainLine(l: Line, indented: boolean): string[] {
 	const indent = indented ? "  ".repeat(l.depth) : "";
-	const lines = [`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}`];
+	const lines = [`${indent}${l.glyph} #${l.id} ${sanitize(l.text)}${PRIORITY_TAG[l.priority]}`];
 	if (l.note) lines.push(`${indent}  · ${sanitize(l.note)}`);
 	return lines;
 }
@@ -177,6 +187,13 @@ export interface ThemeLike {
 	bold?(text: string): string;
 }
 
+const PRIORITY_COLOR: Record<Priority, string> = {
+	critical: "error",
+	high: "warning",
+	medium: "muted",
+	low: "dim",
+};
+
 const STATUS_COLOR: Record<Status, string> = {
 	pending: "dim",
 	in_progress: "warning",
@@ -213,7 +230,9 @@ export function themedTreeLines(
 		const rawText = sanitize(l.text);
 		const text =
 			l.glyph === "[x]" ? theme.fg("dim", rawText) : theme.fg("text", rawText);
-		out.push(`${indent}${glyph} ${id} ${text}`);
+		const prioTag = PRIORITY_TAG[l.priority];
+		const prio = prioTag ? theme.fg(PRIORITY_COLOR[l.priority], prioTag) : "";
+		out.push(`${indent}${glyph} ${id} ${text}${prio}`);
 		if (l.note)
 			out.push(`${indent}  ${theme.fg("dim", `· ${sanitize(l.note)}`)}`);
 	}

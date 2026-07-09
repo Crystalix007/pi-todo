@@ -16,10 +16,16 @@ import { dirname, join } from "node:path";
 
 export type Status = "pending" | "in_progress" | "done";
 
+export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+/** Numeric weight for sorting: higher = more important. */
+export const PRIORITY_ORDER: Record<Priority, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+
 export interface TaskNode {
 	id: number;
 	text: string;
 	status: Status;
+	priority: Priority;
 	note?: string | null;
 	children: TaskNode[];
 }
@@ -49,6 +55,7 @@ export interface ListSummary extends ListRow {
 export interface InsertSpec {
 	text: string;
 	status: Status;
+	priority?: Priority;
 	note?: string | null;
 	parentId: number | null;
 }
@@ -57,6 +64,7 @@ export interface UpdateSpec {
 	text?: string;
 	note?: string | null | undefined; // null/"" clears the note; undefined = leave as-is
 	status?: Status;
+	priority?: Priority;
 	cascade?: boolean;
 }
 
@@ -73,6 +81,7 @@ interface TreeRow {
 	ord: number;
 	text: string;
 	status: Status;
+	priority: Priority;
 	note: string | null;
 	depth: number;
 }
@@ -127,6 +136,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   note TEXT,
+  priority TEXT NOT NULL DEFAULT 'medium',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -135,15 +145,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 `;
 
 const TREE_SQL = `
-WITH RECURSIVE t(id, parent_id, ord, text, status, note, depth, path) AS (
-  SELECT id, parent_id, ord, text, status, note, 0, printf('%012d', ord)
+WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, depth, path) AS (
+  SELECT id, parent_id, ord, text, status, priority, note, 0, printf('%012d', ord)
     FROM tasks WHERE list_id = ? AND parent_id IS NULL
   UNION ALL
-  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.note, p.depth + 1,
+  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, p.depth + 1,
          p.path || '/' || printf('%012d', c.ord)
     FROM tasks c JOIN t p ON c.parent_id = p.id
 )
-SELECT id, parent_id, ord, text, status, note, depth FROM t ORDER BY path
+SELECT id, parent_id, ord, text, status, priority, note, depth FROM t ORDER BY path
 `;
 
 const DESCENDANTS_SQL = `
@@ -155,8 +165,25 @@ WITH RECURSIVE d(id) AS (
 SELECT id FROM d
 `;
 
+const NEXT_WITHIN_SQL = `
+SELECT t.*, CASE t.priority
+  WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1
+END AS prio_num
+FROM tasks t WHERE t.list_id = ? AND t.status = ?
+ORDER BY prio_num DESC, t.id ASC LIMIT 1
+`;
+
+const NEXT_ACROSS_SQL = `
+SELECT t.*, l.scope, l.name,
+  CASE t.priority
+    WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1
+  END AS prio_num
+FROM tasks t JOIN lists l ON t.list_id = l.id
+WHERE t.status = ?
+ORDER BY prio_num DESC, t.id ASC LIMIT 1
+`;
+
 // ---------------------------------------------------------------------------
-// Connection management
 // ---------------------------------------------------------------------------
 
 let dbPromise: Promise<TodoDb> | null = null;
@@ -230,10 +257,10 @@ export class TodoDb {
 			deleteList: conn.prepare("DELETE FROM lists WHERE id = ?"),
 
 			insertTask: conn.prepare(
-				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			),
 			getTask: conn.prepare(
-				"SELECT id, list_id, parent_id, ord, text, status, note FROM tasks WHERE id = ?",
+				"SELECT id, list_id, parent_id, ord, text, status, priority, note FROM tasks WHERE id = ?",
 			),
 			updateText: conn.prepare(
 				"UPDATE tasks SET text = ?, updated_at = ? WHERE id = ?",
@@ -243,6 +270,9 @@ export class TodoDb {
 			),
 			updateStatus: conn.prepare(
 				"UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+			),
+			updatePriority: conn.prepare(
+				"UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?",
 			),
 			setParent: conn.prepare(
 				"UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
@@ -267,6 +297,9 @@ export class TodoDb {
 			countByStatus: conn.prepare(
 				"SELECT status, COUNT(*) AS c FROM tasks WHERE list_id = ? GROUP BY status",
 			),
+
+			nextWithin: conn.prepare(NEXT_WITHIN_SQL),
+			nextAcross: conn.prepare(NEXT_ACROSS_SQL),
 		};
 	}
 
@@ -366,6 +399,7 @@ export class TodoDb {
 			spec.text,
 			spec.status,
 			spec.note ?? null,
+			spec.priority ?? "medium",
 			now,
 			now,
 		);
@@ -383,6 +417,7 @@ export class TodoDb {
 		ord: number;
 		text: string;
 		status: Status;
+		priority: Priority;
 		note: string | null;
 	} {
 		const row = this.stmts.getTask.get(id) as
@@ -393,6 +428,7 @@ export class TodoDb {
 					ord: number;
 					text: string;
 					status: Status;
+					priority: Priority;
 					note: string | null;
 			  }
 			| undefined;
@@ -419,6 +455,9 @@ export class TodoDb {
 				for (const did of ids)
 					this.stmts.updateStatus.run(spec.status, now, did);
 			}
+		}
+		if (spec.priority !== undefined) {
+			this.stmts.updatePriority.run(spec.priority, now, id);
 		}
 		this.touchList(listId);
 	}
@@ -528,6 +567,7 @@ export class TodoDb {
 				id: r.id,
 				text: r.text,
 				status: r.status,
+				priority: r.priority,
 				note: r.note ?? undefined,
 				children: [],
 			});
@@ -551,5 +591,21 @@ export class TodoDb {
 			counts.total += r.c;
 		}
 		return counts;
+	}
+
+	// ---- next-task ----
+
+	nextTaskWithin(listId: number, status: Status): (TreeRow & { list_id: number }) | null {
+		const row = this.stmts.nextWithin.get(listId, status) as
+			| (TreeRow & { list_id: number })
+			| undefined;
+		return row ?? null;
+	}
+
+	nextTaskAcross(status: Status): (TreeRow & { scope: string; name: string }) | null {
+		const row = this.stmts.nextAcross.get(status) as
+			| (TreeRow & { scope: string; name: string })
+			| undefined;
+		return row ?? null;
 	}
 }

@@ -19,6 +19,7 @@ import type {
 	InsertSpec,
 	ListSummary,
 	MoveSpec,
+	Priority,
 	Status,
 	TaskNode,
 	TodoDb,
@@ -44,6 +45,7 @@ export const ACTIONS = [
 	"delete",
 	"delete_list",
 	"purge",
+	"next",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
@@ -51,6 +53,7 @@ interface TaskItemInput {
 	ref?: string;
 	text: string;
 	status?: Status;
+	priority?: Priority;
 	note?: string;
 	underRef?: string;
 }
@@ -66,13 +69,16 @@ export interface TodoParamsInput {
 	text?: string;
 	note?: string;
 	status?: Status;
+	priority?: Priority;
 	cascade?: boolean;
 	after?: number;
 	format?: "tree" | "flat";
 	status_filter?: Status;
 }
 
-const Status = StringEnum(STATUSES);
+const StatusEnum = StringEnum(STATUSES);
+
+const PriorityEnum = StringEnum(["critical", "high", "medium", "low"] as const);
 
 const TaskItem = Type.Object({
 	ref: Type.Optional(
@@ -82,7 +88,7 @@ const TaskItem = Type.Object({
 		}),
 	),
 	text: Type.String({ description: "Task text." }),
-	status: Type.Optional(Status),
+	status: Type.Optional(StatusEnum),
 	note: Type.Optional(
 		Type.String({ description: "Optional detail/note for this task." }),
 	),
@@ -90,6 +96,11 @@ const TaskItem = Type.Object({
 		Type.String({
 			description:
 				"ref of a PARENT item in THIS batch. Omit for a top-level task (or to attach under the top-level 'under' id).",
+		}),
+	),
+	priority: Type.Optional(
+		Type.String({
+			description: "Task priority: critical, high, medium (default), low.",
 		}),
 	),
 });
@@ -134,7 +145,8 @@ export const TodoToolParams = Type.Object({
 			description: "(update) New note. Pass empty string '' to clear.",
 		}),
 	),
-	status: Type.Optional(Status),
+	status: Type.Optional(StatusEnum),
+	priority: Type.Optional(PriorityEnum),
 	cascade: Type.Optional(
 		Type.Boolean({
 			description:
@@ -152,7 +164,7 @@ export const TodoToolParams = Type.Object({
 			description: "(show) 'tree' (default) or 'flat'.",
 		}),
 	),
-	status_filter: Type.Optional(Status),
+	status_filter: Type.Optional(StatusEnum),
 });
 
 function requireListPath(p: TodoParamsInput): {
@@ -242,6 +254,8 @@ export async function dispatchTodo(
 			return doDeleteList(db, p);
 		case "purge":
 			return doPurge(db, p);
+		case "next":
+			return doNext(db, p);
 		default:
 			throw new Error(
 				`Unknown action '${p.action}'. Valid: ${ACTIONS.join(", ")}.`,
@@ -334,6 +348,7 @@ async function doAdd(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 			const spec: InsertSpec = {
 				text: it.text,
 				status: it.status ?? "pending",
+				priority: it.priority ?? "medium",
 				note: it.note ?? null,
 				parentId,
 			};
@@ -371,9 +386,9 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
 	if (p.id === undefined || p.id === null)
 		throw new Error("'id' is required for action 'update'.");
-	if (p.text === undefined && p.note === undefined && p.status === undefined) {
+	if (p.text === undefined && p.note === undefined && p.status === undefined && p.priority === undefined) {
 		throw new Error(
-			"Action 'update' needs at least one of: text, note, status.",
+			"Action 'update' needs at least one of: text, note, status, priority.",
 		);
 	}
 	const spec: UpdateSpec = {};
@@ -383,6 +398,7 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	}
 	if (p.note !== undefined) spec.note = p.note;
 	if (p.status !== undefined) spec.status = p.status;
+	if (p.priority !== undefined) spec.priority = p.priority;
 	if (p.cascade !== undefined) spec.cascade = p.cascade;
 
 	const result = db.txn(() => {
@@ -540,6 +556,91 @@ async function doPurge(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	);
 }
 
+async function doNext(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
+	const wantedStatus: Status = p.status ?? "pending";
+
+	if (p.list) {
+		const { scope, name, path } = requireListPath(p);
+		const result = db.txn(() => {
+			const list = db.getList(scope, name);
+			if (!list)
+				throw new Error(
+					`List '${path}' not found. Use action 'lists' to see available lists.`,
+				);
+			const task = db.nextTaskWithin(list.id, wantedStatus);
+			if (!task)
+				throw new Error(
+					`No '${wantedStatus}' tasks found in '${path}'. Try a different status or add tasks first.`,
+				);
+			const tree = db.fetchTree(list.id);
+			const counts = db.countsFor(list.id);
+			return { list, task, tree, counts, path };
+		});
+		const content = renderTree({
+			tree: result.tree,
+			counts: result.counts,
+			path: result.path,
+			title: result.list.title,
+		});
+		return ok(
+			{
+				action: "next",
+				list: listRef(result.list),
+				tree: result.tree,
+				counts: result.counts,
+				next_task: {
+					id: result.task.id,
+					text: result.task.text,
+					status: result.task.status,
+					priority: result.task.priority,
+					note: result.task.note,
+				},
+			},
+			content,
+		);
+	}
+
+	// Search across all lists.
+	const result = db.txn(() => {
+		const task = db.nextTaskAcross(wantedStatus);
+		if (!task)
+			throw new Error(
+				`No '${wantedStatus}' tasks found in any list. Try adding tasks first.`,
+			);
+		const scope = task.scope;
+		const name = task.name;
+		const list = db.getList(scope, name)!;
+		const tree = db.fetchTree(list.id);
+		const counts = db.countsFor(list.id);
+		return { list, task, tree, counts };
+	});
+	const path = result.list.scope
+		? `${result.list.scope}/${result.list.name}`
+		: result.list.name;
+	const content = renderTree({
+		tree: result.tree,
+		counts: result.counts,
+		path,
+		title: result.list.title,
+	});
+	return ok(
+		{
+			action: "next",
+			list: listRef(result.list),
+			tree: result.tree,
+			counts: result.counts,
+			next_task: {
+				id: result.task.id,
+				text: result.task.text,
+				status: result.task.status,
+				priority: result.task.priority,
+				note: result.task.note,
+			},
+		},
+		content,
+	);
+}
+
 // ---- details helpers ----
 
 function listRef(l: { scope: string; name: string; title: string | null }): {
@@ -589,6 +690,7 @@ export function buildTodoToolDef(deps: TodoToolDeps) {
 			"Use the todo tool for planning tasks; create/update tasks via todo rather than writing plan files to disk.",
 			"After mutating with todo, the returned tree shows the current state — no need to call todo show again.",
 			"Author a whole nested plan in one todo add call using items[] with ref/underRef (e.g. [{ref:'p',text:'Parent'},{text:'Child',underRef:'p'}]).",
+			"Use next to pull the highest-priority pending task from a list for focused work.",
 		],
 		parameters: TodoToolParams,
 		async execute(
@@ -619,12 +721,13 @@ function buildDescription(): string {
 		"- lists: list all TODO lists. Optional 'scope' filters by exact scope.",
 		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter'.",
 		"- create {list} [title]: create/ensure a list exists (optionally set a title).",
-		"- add {list, items[, under]}: add task(s). 'items' is an array; nest via ref/underRef. 'under'=existing task id to attach top-level items under.",
-		"- update {list, id, text|note|status[, cascade]}: edit a task; 'note':'' clears it; cascade applies status to all descendants.",
+		"- add {list, items[, under]}: add task(s). 'items' is an array; each may have 'priority' (critical|high|medium|low, default medium). Nest via ref/underRef. 'under'=existing task id to attach top-level items under.",
+		"- update {list, id, text|note|status|priority[, cascade]}: edit a task.",
 		"- move {list, id[, under][, after]}: reparent/reorder. 'under' omits to top-level; 'after'=sibling id to place after.",
 		"- delete {list, id}: remove a task and its subtree.",
 		"- delete_list {list}: remove an entire list and all its tasks.",
 		"- purge {list}: remove completed work — deletes any task that is 'done' with no pending descendants (done leaves included). Pending tasks are never deleted.",
+		"- next {list?}: get the highest-priority pending task. If 'list' is given, search within it; otherwise search all lists. Optional 'status' to look for e.g. 'in_progress' instead.",
 		"",
 		"STATUS is one of: pending, in_progress, done.",
 		"Every write returns the affected list's current tree + counts, so you needn't call 'show' afterward.",
