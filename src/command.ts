@@ -359,9 +359,7 @@ class TodoViewer {
 				}
 			}
 		} else if (matchesKey(data, "backspace")) {
-			const prev = this.stack.pop();
-			if (prev && prev !== "lists") this.open(prev);
-			else this.open(null);
+			this.navigateBack();
 		} else if (matchesKey(data, "s")) {
 			const cur = SORT_MODES.indexOf(this.sortMode);
 			const next = SORT_MODES[(cur + 1) % SORT_MODES.length];
@@ -394,7 +392,11 @@ class TodoViewer {
 			matchesKey(data, "ctrl+c") ||
 			matchesKey(data, "q")
 		) {
-			this.done();
+			if (this.stack.length > 0) {
+				this.navigateBack();
+			} else {
+				this.done();
+			}
 		}
 	}
 
@@ -461,6 +463,12 @@ class TodoViewer {
 		if (selectedLine < this.scroll) this.scroll = selectedLine;
 		else if (selectedLine >= this.scroll + height)
 			this.scroll = selectedLine - height + 1;
+	}
+
+	private navigateBack(): void {
+		const prev = this.stack.pop();
+		if (prev && prev !== "lists") this.open(prev);
+		else this.open(null);
 	}
 
 	// theme helpers
