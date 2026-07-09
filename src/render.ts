@@ -43,6 +43,8 @@ export interface TreeView {
 	counts: Counts;
 	path: string;
 	title?: string | null;
+	/** Root task text shown in header for subtree views. */
+	rootTaskText?: string;
 }
 
 export type SortMode = "creation" | "completion" | "priority";
@@ -113,8 +115,10 @@ export function countsOfTree(tree: TaskNode[]): Counts {
 }
 
 export function headerLine(view: TreeView): string {
-	const { counts, path, title } = view;
-	const namePart = title ? `${path}  (${title})` : path;
+	const { counts, path, title, rootTaskText } = view;
+	let namePart = path;
+	if (rootTaskText) namePart += ` "${rootTaskText}"`;
+	if (title) namePart += `  (${title})`;
 	const parts = [namePart, `${counts.done}/${counts.total} done`];
 	if (counts.in_progress > 0) parts.push(`${counts.in_progress} in progress`);
 	return parts.join("  ·  ");

@@ -11,9 +11,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
-import type { ListSummary, TodoDb } from "./db.ts";
+import type { ListSummary, TaskNode, TodoDb } from "./db.ts";
 import { parseListPath } from "./paths.ts";
 import {
+	countsOfTree,
 	renderLists,
 	renderTree,
 	themedTreeLines,
@@ -50,11 +51,13 @@ export function registerTodoCommand(
 
 			// Decide initial view from the argument.
 			let initialPath: string | null = null;
+			let initialRootId: number | undefined;
 			const trimmed = (args ?? "").trim();
 			if (trimmed) {
 				try {
 					const ref = parseListPath(trimmed);
 					initialPath = ref.path;
+					initialRootId = ref.rootTaskId;
 				} catch (err) {
 					if (ctx.hasUI) ctx.ui.notify((err as Error).message, "error");
 					return;
@@ -79,7 +82,11 @@ export function registerTodoCommand(
 						() => tui?.rows ?? tui?.height ?? 40,
 						done,
 					);
-					viewer.open(initialPath);
+					if (initialRootId != null) {
+						viewer.openSubtree(initialPath!, initialRootId);
+					} else {
+						viewer.open(initialPath);
+					}
 					return viewer;
 				},
 			);
@@ -96,10 +103,29 @@ function buildListSummary(db: TodoDb, path: string): string {
 	const ref = parseListPath(path);
 	return db.txn(() => {
 		const list = db.getList(ref.scope, ref.name);
-		if (!list) return `List '${path}' not found.`;
+		if (!list) return `List '${ref.path}' not found.`;
+		if (ref.rootTaskId != null) {
+			let tree: TaskNode[];
+			try {
+				tree = db.fetchSubtree(list.id, ref.rootTaskId);
+			} catch {
+				return `Task #${ref.rootTaskId} not found in '${ref.path}'.`;
+			}
+			const counts = countsOfTree(tree);
+			const showPath = `${ref.path}#${ref.rootTaskId}`;
+			const rootText =
+				tree.length > 0 ? tree[0]!.text : undefined;
+			return renderTree({
+				tree,
+				counts,
+				path: showPath,
+				title: list.title,
+				rootTaskText: rootText,
+			}).text;
+		}
 		const tree = db.fetchTree(list.id);
 		const counts = db.countsFor(list.id);
-		return renderTree({ tree, counts, path, title: list.title }).text;
+		return renderTree({ tree, counts, path: ref.path, title: list.title }).text;
 	});
 }
 
@@ -135,6 +161,8 @@ class TodoViewer {
 	private stack: string[] = []; // list paths visited (for back navigation)
 	private sortMode: SortMode = "creation";
 	private showDescriptions = false;
+	private subtreeRootId: number | null = null;
+	private fullListPath: string | null = null;
 
 	constructor(
 		db: TodoDb,
@@ -152,11 +180,26 @@ class TodoViewer {
 	open(path: string | null): void {
 		this.cursor = 0;
 		this.scroll = 0;
-		if (path) {
-			this.content = this.buildTree(path);
-		} else {
+		this.subtreeRootId = null;
+		this.fullListPath = null;
+		if (!path) {
 			this.content = this.buildLists();
+			return;
 		}
+		// Detect subtree reference via #id suffix.
+		const ref = parseListPath(path);
+		if (ref.rootTaskId != null) {
+			this.openSubtree(ref.path, ref.rootTaskId);
+		} else {
+			this.content = this.buildTree(path);
+		}
+	}
+
+	/** Open a subtree view rooted at a specific task within a list. */
+	openSubtree(fullPath: string, rootTaskId: number): void {
+		this.subtreeRootId = rootTaskId;
+		this.fullListPath = fullPath;
+		this.content = this.buildSubtree(fullPath, rootTaskId);
 	}
 
 	private buildLists(): ViewerContent {
@@ -182,6 +225,62 @@ class TodoViewer {
 		lines.push("");
 		lines.push(this.dim("↑/↓ select · Enter open · Esc close"));
 		return { lines, selectable, listPaths, title: "lists" };
+	}
+
+	private buildSubtree(fullPath: string, rootTaskId: number): ViewerContent {
+		const ref = parseListPath(fullPath);
+		const data = this.db.txn(() => {
+			const list = this.db.getList(ref.scope, ref.name);
+			if (!list) return null;
+			let tree: TaskNode[];
+			try {
+				tree = this.db.fetchSubtree(list.id, rootTaskId);
+			} catch {
+				return null;
+			}
+			return { list, tree, counts: countsOfTree(tree) };
+		});
+		if (!data) {
+			return {
+				lines: [
+					this.bold(`Task #${rootTaskId} not found in '${fullPath}'.`),
+					"",
+					this.dim("b back · Esc close"),
+				],
+				selectable: [],
+				listPaths: [],
+				title: `${fullPath}#${rootTaskId}`,
+			};
+		}
+		sortTree(data.tree, this.sortMode);
+		const rootText =
+			data.tree.length > 0 ? data.tree[0]!.text : undefined;
+		const body = themedTreeLines(
+			{
+				tree: data.tree,
+				counts: data.counts,
+				path: `${fullPath}#${rootTaskId}`,
+				title: data.list.title,
+				rootTaskText: rootText,
+			},
+			this.theme,
+			{ showDescriptions: this.showDescriptions },
+		);
+		const sortLabel = SORT_LABEL[this.sortMode];
+		const descStatus = this.showDescriptions ? "on" : "off";
+		const lines = [
+			...body,
+			"",
+			this.dim(
+				`↑/↓ scroll · b back to full list · s sort: ${sortLabel} · d desc: ${descStatus}`,
+			),
+		];
+		return {
+			lines,
+			selectable: [],
+			listPaths: [],
+			title: `${fullPath}#${rootTaskId}`,
+		};
 	}
 
 	private buildTree(path: string): ViewerContent {
@@ -264,16 +363,28 @@ class TodoViewer {
 			this.sortMode = next ?? "creation";
 			this.cursor = 0;
 			this.scroll = 0;
-			this.content =
-				this.content.title === "lists"
-					? this.buildLists()
-					: this.buildTree(this.content.title);
+			if (this.subtreeRootId != null && this.fullListPath != null) {
+				this.openSubtree(this.fullListPath, this.subtreeRootId);
+			} else {
+				this.content =
+					this.content.title === "lists"
+						? this.buildLists()
+						: this.buildTree(this.content.title);
+			}
 		} else if (matchesKey(data, "d")) {
 			if (this.content.title !== "lists") {
 				this.showDescriptions = !this.showDescriptions;
 				this.cursor = 0;
 				this.scroll = 0;
-				this.content = this.buildTree(this.content.title);
+				if (this.subtreeRootId != null && this.fullListPath != null) {
+					this.openSubtree(this.fullListPath, this.subtreeRootId);
+				} else {
+					this.content = this.buildTree(this.content.title);
+				}
+			}
+		} else if (matchesKey(data, "b")) {
+			if (this.subtreeRootId != null && this.fullListPath != null) {
+				this.open(this.fullListPath);
 			}
 		} else if (
 			matchesKey(data, "escape") ||

@@ -28,6 +28,7 @@ import type {
 import { parseListPath } from "./paths.ts";
 import {
 	DEFAULT_MAX_TREE_LINES,
+	countsOfTree,
 	headerLine,
 	renderLists,
 	renderTree,
@@ -195,11 +196,7 @@ export const TodoToolParams = Type.Object({
 	status_filter: Type.Optional(StatusEnum),
 });
 
-function requireListPath(p: TodoParamsInput): {
-	scope: string;
-	name: string;
-	path: string;
-} {
+function requireListPath(p: TodoParamsInput): ReturnType<typeof parseListPath> {
 	if (!p.list)
 		throw new Error(
 			"Parameter 'list' is required for this action. Use '$scope/$name' or '/$name'.",
@@ -309,17 +306,27 @@ async function doLists(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 }
 
 async function doShow(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
-	const { scope, name, path } = requireListPath(p);
+	const ref = requireListPath(p);
+	const { scope, name } = ref;
+	const showPath = ref.rootTaskId != null ? `${ref.path}#${ref.rootTaskId}` : ref.path;
 	const { list, tree, counts } = db.txn(() => {
 		const l = db.getList(scope, name);
 		if (!l)
 			throw new Error(
-				`List '${path}' not found. Use action 'lists' to see available lists.`,
+				`List '${ref.path}' not found. Use action 'lists' to see available lists.`,
 			);
+		if (ref.rootTaskId != null) {
+			const subtree = db.fetchSubtree(l.id, ref.rootTaskId);
+			return {
+				list: l,
+				tree: subtree,
+				counts: countsOfTree(subtree),
+			};
+		}
 		return { list: l, tree: db.fetchTree(l.id), counts: db.countsFor(l.id) };
 	});
 	const content = renderTree(
-		{ tree, counts, path, title: list.title },
+		{ tree, counts, path: showPath, title: list.title },
 		{ format: p.format, statusFilter: p.status_filter },
 	);
 	return ok({ action: "show", list: listRef(list), tree, counts }, content);
@@ -599,21 +606,32 @@ async function doNext(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	const wantedStatus: Status = p.status ?? "pending";
 
 	if (p.list) {
-		const { scope, name, path } = requireListPath(p);
+		const ref = requireListPath(p);
+		const { scope, name } = ref;
 		const result = db.txn(() => {
 			const list = db.getList(scope, name);
 			if (!list)
 				throw new Error(
-					`List '${path}' not found. Use action 'lists' to see available lists.`,
+					`List '${ref.path}' not found. Use action 'lists' to see available lists.`,
 				);
+			if (ref.rootTaskId != null) {
+				const task = db.nextTaskInSubtree(list.id, ref.rootTaskId, wantedStatus);
+				if (!task)
+					throw new Error(
+						`No '${wantedStatus}' tasks found in subtree '${ref.path}#${ref.rootTaskId}'. Try a different status or add tasks first.`,
+					);
+				const tree = db.fetchSubtree(list.id, ref.rootTaskId);
+				const counts = countsOfTree(tree);
+				return { list, task, tree, counts, path: `${ref.path}#${ref.rootTaskId}` };
+			}
 			const task = db.nextTaskWithin(list.id, wantedStatus);
 			if (!task)
 				throw new Error(
-					`No '${wantedStatus}' tasks found in '${path}'. Try a different status or add tasks first.`,
+					`No '${wantedStatus}' tasks found in '${ref.path}'. Try a different status or add tasks first.`,
 				);
 			const tree = db.fetchTree(list.id);
 			const counts = db.countsFor(list.id);
-			return { list, task, tree, counts, path };
+			return { list, task, tree, counts, path: ref.path };
 		});
 		const content = renderTree({
 			tree: result.tree,

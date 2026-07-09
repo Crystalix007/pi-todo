@@ -198,6 +198,31 @@ WHERE t.status = ?
 ORDER BY prio_num DESC, t.id ASC LIMIT 1
 `;
 
+const SUBTREE_SQL = `
+WITH RECURSIVE t(id, parent_id, ord, text, status, priority, note, tags, description, depth, path) AS (
+  SELECT id, parent_id, ord, text, status, priority, note, tags, description, 0, printf('%012d', ord)
+    FROM tasks WHERE id = ?
+  UNION ALL
+  SELECT c.id, c.parent_id, c.ord, c.text, c.status, c.priority, c.note, c.tags, c.description, p.depth + 1,
+         p.path || '/' || printf('%012d', c.ord)
+    FROM tasks c JOIN t p ON c.parent_id = p.id
+)
+SELECT id, parent_id, ord, text, status, priority, note, tags, description, depth FROM t ORDER BY path
+`;
+
+const NEXT_IN_SUBTREE_SQL = `
+WITH RECURSIVE subtree(id) AS (
+  SELECT id FROM tasks WHERE id = ?
+  UNION ALL
+  SELECT c.id FROM tasks c JOIN subtree s ON c.parent_id = s.id
+)
+SELECT t.*, CASE t.priority
+  WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1
+END AS prio_num
+FROM tasks t WHERE t.list_id = ? AND t.status = ? AND t.id IN (SELECT id FROM subtree)
+ORDER BY prio_num DESC, t.id ASC LIMIT 1
+`;
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
@@ -332,6 +357,8 @@ export class TodoDb {
 
 			nextWithin: conn.prepare(NEXT_WITHIN_SQL),
 			nextAcross: conn.prepare(NEXT_ACROSS_SQL),
+			subtree: conn.prepare(SUBTREE_SQL),
+			nextInSubtree: conn.prepare(NEXT_IN_SUBTREE_SQL),
 		};
 	}
 
@@ -644,6 +671,39 @@ export class TodoDb {
 		return counts;
 	}
 
+	// ---- subtree ----
+
+	/** Fetch a subtree rooted at a specific task id within a list. */
+	fetchSubtree(listId: number, rootTaskId: number): TaskNode[] {
+		this.getTaskInList(listId, rootTaskId); // throws if missing / wrong list
+		const rows = this.stmts.subtree.all(rootTaskId) as TreeRow[];
+		const parseTags = (raw: string | null): string[] | undefined =>
+			raw ? raw.split(",").filter(Boolean) : undefined;
+		const nodes = new Map<number, TaskNode>();
+		let root: TaskNode | undefined;
+		for (const r of rows) {
+			const node: TaskNode = {
+				id: r.id,
+				text: r.text,
+				status: r.status,
+				priority: r.priority,
+				note: r.note ?? undefined,
+				tags: parseTags(r.tags),
+				description: r.description ?? undefined,
+				children: [],
+			};
+			nodes.set(r.id, node);
+			if (r.id === rootTaskId) root = node;
+		}
+		for (const r of rows) {
+			if (r.parent_id == null) continue;
+			const parent = nodes.get(r.parent_id);
+			const child = nodes.get(r.id);
+			if (parent && child) parent.children.push(child);
+		}
+		return root ? [root] : [];
+	}
+
 	// ---- next-task ----
 
 	nextTaskWithin(
@@ -661,6 +721,17 @@ export class TodoDb {
 	): (TreeRow & { scope: string; name: string }) | null {
 		const row = this.stmts.nextAcross.get(status) as
 			| (TreeRow & { scope: string; name: string })
+			| undefined;
+		return row ?? null;
+	}
+
+	nextTaskInSubtree(
+		listId: number,
+		rootTaskId: number,
+		status: Status,
+	): (TreeRow & { list_id: number }) | null {
+		const row = this.stmts.nextInSubtree.get(rootTaskId, listId, status) as
+			| (TreeRow & { list_id: number })
 			| undefined;
 		return row ?? null;
 	}
