@@ -113,8 +113,7 @@ function buildListSummary(db: TodoDb, path: string): string {
 			}
 			const counts = countsOfTree(tree);
 			const showPath = `${ref.path}#${ref.rootTaskId}`;
-			const rootText =
-				tree.length > 0 ? tree[0]!.text : undefined;
+			const rootText = tree.length > 0 ? tree[0]!.text : undefined;
 			return renderTree({
 				tree,
 				counts,
@@ -253,8 +252,7 @@ class TodoViewer {
 			};
 		}
 		sortTree(data.tree, this.sortMode);
-		const rootText =
-			data.tree.length > 0 ? data.tree[0]!.text : undefined;
+		const rootText = data.tree.length > 0 ? data.tree[0]!.text : undefined;
 		const body = themedTreeLines(
 			{
 				tree: data.tree,
@@ -317,7 +315,9 @@ class TodoViewer {
 		const lines = [
 			...body,
 			"",
-			this.dim(`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel} · d desc: ${descStatus}`),
+			this.dim(
+				`↑/↓ scroll · Backspace/Esc back · s sort: ${sortLabel} · d desc: ${descStatus}`,
+			),
 		];
 		return { lines, selectable: [], listPaths: [], title: path };
 	}
@@ -413,7 +413,7 @@ class TodoViewer {
 		) {
 			let line = this.content.lines[i] ?? "";
 			if (sel.length > 0 && sel[this.cursor] === i) {
-				line = `${this.theme.fg("accent", "▸")} ${line.slice(1)}`; // replace leading "  " marker
+				line = this.theme.fg("accent", line);
 			}
 			view.push(truncateToWidth(line, width));
 		}

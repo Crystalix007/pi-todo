@@ -306,7 +306,11 @@ export function themedTreeLines(
 		const tagStr = formatTagsPlain(l.tags);
 		const tags = tagStr ? theme.fg("info", tagStr) : "";
 		const hasDesc = l.description != null && l.description.trim() !== "";
-		const descIndicator = showDesc ? "" : hasDesc ? theme.fg("dim", " [⋯]") : "";
+		const descIndicator = showDesc
+			? ""
+			: hasDesc
+				? theme.fg("dim", " [⋯]")
+				: "";
 		out.push(`${indent}${glyph} ${id} ${text}${prio}${tags}${descIndicator}`);
 		if (l.note)
 			out.push(`${indent}  ${theme.fg("dim", `· ${sanitize(l.note)}`)}`);
@@ -316,8 +320,7 @@ export function themedTreeLines(
 			const capped = descLines.slice(0, 5);
 			for (const dl of capped)
 				out.push(`${pad}${theme.fg("dim", `▸ ${sanitize(dl)}`)}`);
-			if (descLines.length > 5)
-				out.push(`${pad}${theme.fg("dim", "▸ …")}`);
+			if (descLines.length > 5) out.push(`${pad}${theme.fg("dim", "▸ …")}`);
 		}
 	}
 	return out;
