@@ -7,7 +7,7 @@
   "keywords": [
     "pi-package"
   ],
-  "license": "MIT",
+  "license": "GPL-3.0",
   "pi": {
     "extensions": [
       "./src/index.ts"
