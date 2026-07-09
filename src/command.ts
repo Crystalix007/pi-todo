@@ -261,8 +261,10 @@ class TodoViewer {
 			this.sortMode = next ?? "creation";
 			this.cursor = 0;
 			this.scroll = 0;
-			const lastPath = this.stack.at(-1);
-			this.open(lastPath ?? null);
+			this.content =
+				this.content.title === "lists"
+					? this.buildLists()
+					: this.buildTree(this.content.title);
 		} else if (
 			matchesKey(data, "escape") ||
 			matchesKey(data, "ctrl+c") ||
