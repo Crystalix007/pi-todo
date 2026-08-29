@@ -12,7 +12,9 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "skills": ["./skills"]
+    "skills": [
+      "./skills"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -22,5 +24,8 @@
   },
   "devDependencies": {
     "@types/node": "*"
+  },
+  "scripts": {
+    "test": "node --test tests/todo.test.ts"
   }
 }

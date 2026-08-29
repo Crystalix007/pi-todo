@@ -17,7 +17,7 @@ export const MAX_LINE_WIDTH = 500;
 export const MAX_OUTPUT_BYTES = 24000;
 
 /** Collapse control chars (incl. newlines/tabs) so a task can't break the tree layout. */
-function sanitize(s: string): string {
+export function sanitize(s: string): string {
 	const collapsed = (s ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").trim();
 	return collapsed.length > MAX_LINE_WIDTH
 		? `${collapsed.slice(0, MAX_LINE_WIDTH - 1)}…`
@@ -205,8 +205,10 @@ export function renderTree(view: TreeView, opts: ShowOpts = {}): RenderedText {
 	const budget = Math.max(5, maxLines - lines.length);
 	let truncated = false;
 	let emitted = 0;
+	let tasksEmitted = 0;
 	for (const l of display) {
 		const seg = plainLine(l, !flat); // tree mode indents; flat mode no indent
+		let taskStarted = false;
 		for (const s of seg) {
 			if (emitted >= budget) {
 				truncated = true;
@@ -214,20 +216,27 @@ export function renderTree(view: TreeView, opts: ShowOpts = {}): RenderedText {
 			}
 			lines.push(s);
 			emitted++;
+			if (!taskStarted) {
+				taskStarted = true;
+				tasksEmitted++;
+			}
 		}
 		if (truncated) break;
 	}
 
 	if (truncated) {
-		const remaining = display.length - emitted;
+		// display.length counts TASKS; emitted counts rendered LINES (a task can
+		// also render note + description lines), so the remaining-task count must
+		// be tracked separately or it can go negative.
+		const remaining = display.length - tasksEmitted;
 		lines.push(
-			`… ${remaining} more task(s) truncated. Narrow with status_filter, or view via the /todo command.`,
+			`… ${remaining} more task(s) truncated. Narrow with status_filter ('pending'|'in_progress'|'done') or a subtree ref ('list#id').`,
 		);
 	}
 	let text = lines.join("\n");
 	// Byte backstop: a single oversized field (after line capping) still can't blow context.
 	if (text.length > MAX_OUTPUT_BYTES) {
-		text = `${text.slice(0, MAX_OUTPUT_BYTES - 120)}\n… output truncated at ~${MAX_OUTPUT_BYTES} bytes; narrow with status_filter or use /todo.`;
+		text = `${text.slice(0, MAX_OUTPUT_BYTES - 120)}\n… output truncated at ~${MAX_OUTPUT_BYTES} bytes; narrow with status_filter or a subtree ref ('list#id').`;
 		truncated = true;
 	}
 	return { text, truncated };
@@ -289,11 +298,7 @@ export function themedTreeLines(
 		const indent = flat ? "" : "  ".repeat(l.depth);
 		const glyph = theme.fg(
 			STATUS_COLOR[
-				l.glyph === "[x]"
-					? "done"
-					: l.glyph === "[~]"
-						? "in_progress"
-						: "pending"
+				l.glyph === "[x]" ? "done" : l.glyph === "[~]" ? "in_progress" : "pending"
 			],
 			l.glyph,
 		);
@@ -306,11 +311,7 @@ export function themedTreeLines(
 		const tagStr = formatTagsPlain(l.tags);
 		const tags = tagStr ? theme.fg("info", tagStr) : "";
 		const hasDesc = l.description != null && l.description.trim() !== "";
-		const descIndicator = showDesc
-			? ""
-			: hasDesc
-				? theme.fg("dim", " [⋯]")
-				: "";
+		const descIndicator = showDesc ? "" : hasDesc ? theme.fg("dim", " [⋯]") : "";
 		out.push(`${indent}${glyph} ${id} ${text}${prio}${tags}${descIndicator}`);
 		if (l.note)
 			out.push(`${indent}  ${theme.fg("dim", `· ${sanitize(l.note)}`)}`);

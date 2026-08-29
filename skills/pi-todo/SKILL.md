@@ -25,7 +25,15 @@ After `add`, `update`, `move`, `delete`, `purge` — the response includes the f
 
 ### Priority
 
-`critical` > `high` > `medium` (default) > `low`. Use `next` (action: "next") to pull the highest-priority pending task from a list.
+`critical` > `high` > `medium` (default) > `low`. Use `next` (action: "next") to pull the highest-priority pending task from a list. `next` is **read-only**: it does not mark the task `in_progress` — call `update` with `status: "in_progress"` when you start work. When nothing matches, `next` returns `next_task: null` (a normal result, not an error); the response also marks the pick as `next → #<id>`.
+
+### Recovering from errors
+
+- List not found / bad id → the error message tells you; run `lists` or `show` to discover valid paths and ids.
+- Task ids are SQLite-persisted: ids from earlier calls stay valid across sessions.
+- `add` with `under` rejects ids from another list (nothing is inserted).
+- A bare `move {list, id}` (no `under`) moves the task to **top level** — pass `under` to keep it nested.
+- `next` on an exhausted queue is not an error: treat `next_task: null` as "nothing to do".
 
 ### Tags
 
@@ -37,7 +45,7 @@ Optional multi-line `description` for context beyond the title. Shown as indente
 
 ### Subtree references
 
-Append `#task-id` to a list path to scope to a specific task's descendants:
+Append `#task-id` to a list path to scope to a specific task's subtree (the task itself and its descendants):
 
 ```
 list: "feature/auth#7"       // show only task #7 and its children
