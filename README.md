@@ -1,18 +1,14 @@
 # pi-todo
 
-Hierarchical TODO lists that agents can plan, check off, and refine — persisted in SQLite3, reachable from any project.
+Hierarchical TODO lists for pi agents, persisted in SQLite. Tasks nest to any depth; every read renders the current tree back to the agent, so a plan is also its own status report.
 
 ## Install
-
-Copy-paste into pi:
 
 ```bash
 pi install git:github.com/Crystalix007/pi-todo
 ```
 
-That's it. The `todo` tool and `/todo` command will be available in your next session (or after `/reload`).
-
-If you just want to try it without installing:
+The `todo` tool and `/todo` command are available next session, or after `/reload`. Try it without installing:
 
 ```bash
 pi -e git:github.com/Crystalix007/pi-todo
@@ -20,54 +16,60 @@ pi -e git:github.com/Crystalix007/pi-todo
 
 ## Quick start
 
-Open pi and ask your agent:
+Ask the agent:
 
-> Add a few tasks to a list called `my-project/tasks`, nested: a parent "Build login" with children "HTML form" and "POST handler", plus a separate "Write tests".
+> Create a list `my-project/tasks` with a parent "Build login", children "HTML form" and "POST handler", and a separate "Write tests". Set the project path to this repo and the description to "Ship login in this sprint".
 
-The agent creates the list and tasks in one tool call. To see what's there yourself, type:
+View it yourself:
 
-```
+```text
 /todo my-project/tasks
 ```
 
-Mark things done:
+Every write (`add`, `update`, `move`, `delete`, `purge`) returns the affected list's tree, so the agent never needs a follow-up `show`.
 
-> Check off Build login as done (cascade to subtasks too).
+## How it works
 
-## Key concepts
+**List paths.** A list lives at `$scope/$name` (`my-project/tasks`) or `$name` for root-level lists; scope is everything before the last `/`. Input is normalized, so `tasks`, `/tasks`, and `tasks/` all name the same list. Lists auto-create on first `add`, or explicitly via `create`.
 
-**Lists** live at a path — `$scope/$name` (e.g. `my-project/tasks`) or just `/tasks` for root. Scope is everything before the last slash. Don't worry about exact formatting — `tasks`, `/tasks`, and `tasks/` all mean the same thing. Lists auto-create the first time you add a task.
+**Tasks.** Nest arbitrarily deep. Each task has a `status` (`pending`, `in_progress`, `done`) and a `priority` (`critical`, `high`, `medium`, `low`), plus optional `note`, `tags`, and a multi-line `description`.
 
-Each list carries optional metadata — a human `title`, a `project_path` (the directory the work belongs to), and a `description` (the overall goal). Set them when creating the list: `create {list, title, project_path, description}`. Every read of the list — including subtree views like `my-project/tasks#7` handed to a subagent — echoes the project path and goal, so a scoped subagent still knows what project it's working in and what the list is trying to achieve.
+**List metadata.** A list can carry a `title`, a `project_path` (the directory the work belongs to), and a `description` (the overall goal). Set them in `create`, or later with `update` without an `id`. Every read prints them in the header, subtree views included, so a subagent scoped to `list#id` still knows the project and the goal:
 
-**Tasks** are nested. A task can have subtasks (and those can have subtasks, arbitrarily deep). Every task has a `status` (`pending`, `in_progress`, or `done`) and a `priority` (`critical`, `high`, `medium`, or `low`). Checking something off means setting its status to `done`.
+```text
+my-app/sprint  (Sprint 24)  ·  project: /Users/me/code/my-app  ·  goal: Ship v2 of the billing flow before the 15th  ·  0/3 done
+```
 
-**Pull the next task** with the `next` action — it finds the highest-priority pending task in a list (or across all lists). Mark things `in_progress` as you work on them and the `next` will skip past them.
+**Subtree refs.** Append `#<task-id>` to a list path (`feature/auth#7`) to scope `show`/`next` to that task and its descendants. This is the standard way to hand a subagent a bounded slice of a plan.
 
-**The agent does the work.** The `/todo` command shows lists and tasks in a keyboard-navigable viewer (↑/↓, Enter to drill in, Esc/Backspace to go back). But it's read-only — ask the agent to create, update, move, or delete. Every write returns the updated tree, so the agent doesn't need a follow-up read.
+**The `/todo` viewer is read-only.** It is for humans. All changes go through the `todo` tool; ask the agent to make them.
 
-## Action reference
+## Actions
 
-All operations go through the `todo` tool. The agent picks an `action` and fills in the fields it needs:
+| Action | Purpose | Key fields |
+| ------ | ------- | ---------- |
+| `lists` | List all lists | `scope` (prefix filter) |
+| `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter` |
+| `create` | Create a list | `list`, `title`, `project_path`, `description` |
+| `add` | Add task(s) | `list`, `items[]`, `under` |
+| `update` | Edit a task, or list metadata | `list` + `id`, or `list` only |
+| `move` | Reparent / reorder a task | `list`, `id`, `under`, `after` |
+| `delete` | Remove a task and its subtree | `list`, `id` |
+| `delete_list` | Remove a whole list | `list` |
+| `purge` | Remove fully-done branches | `list` |
+| `next` | Highest-priority pending task | `list` (optional), `status` |
 
-| Action | What it does | Required | Key options |
-| ------ | ------------ | -------- | ----------- |
-| `lists` | Show all TODO lists | — | `scope` to filter by scope |
-| `show` | View a list's task tree | `list` | `format` (`tree`\|`flat`), `status_filter` |
-| `add` | Create task(s) in one call | `list`, `items` | `under`, `priority` per item |
-| `update` | Edit text, note, status, priority, or description | `list`, `id`, at least one change | `cascade` to push status to all descendants. Without `id`: updates the list itself (`title`, `project_path`, `description`; `''` clears) |
-| `move` | Reparent or reorder | `list`, `id` | `under` (new parent), `after` (sibling to place after) |
-| `next` | Pull the highest-priority pending task | `list` (optional; omit = all lists) | `status` (default `pending`) |
-| `delete` | Remove a task and its subtree | `list`, `id` | — |
-| `purge` | Clean up completed work | `list` | — |
-| `create` | Explicitly create a list | `list` | `title`, `project_path`, `description` |
-| `delete_list` | Remove a whole list | `list` | — |
+Field semantics:
 
-`purge` only removes tasks that are `done` with no pending descendants — it never deletes work you still need.
+- `update` with an `id` edits the task: `text`, `note`, `status`, `priority`, `tags`, `description`. `cascade` pushes a status change to all descendants. `''` clears `note`/`description`, `[]` clears `tags`.
+- `update` without an `id` edits the list: `title`, `project_path`, `description`. `''` clears a field.
+- `add` nests via `ref`/`underRef` (below) and attaches under an existing task with `under`.
+- `next` is read-only. It returns `next_task: null` when nothing matches (not an error) and never changes a task's status; mark it `in_progress` after picking it up.
+- `purge` deletes only `done` branches with no pending descendants.
 
-## Nested plans in one call
+## Nested authoring in one call
 
-The agent authors nested tasks using `ref` labels (unique within the call) and `underRef` (reference to a parent in the same batch). No recursive JSON schema needed — every provider accepts this:
+`add` accepts an `items[]` batch where each item may carry a `ref` label and an `underRef` pointing at another item's `ref`. No recursive JSON schema, works on every provider:
 
 ```jsonc
 {
@@ -82,22 +84,36 @@ The agent authors nested tasks using `ref` labels (unique within the call) and `
 }
 ```
 
-After calling `add`, the tool returns the current tree so the agent can act on it immediately — no `show` needed.
-
 ## Persistence
 
-Data is stored in `~/.pi/agent/todo.db` (SQLite3, WAL mode). Set `PI_TODO_DB=./.pi/todo.db` if you want per-project isolation. Lists survive restarts and are reachable from any project — the scope/name scheme is how you organize them.
+Data is stored in `~/.pi/agent/todo.db` (SQLite, WAL mode). Lists survive restarts and are shared across all projects; the scope prefix is the organizational scheme. Set `PI_TODO_DB=/path/to/todo.db` for per-project isolation. The schema migrates itself on open.
 
-## Structure
+## `/todo` viewer
 
-For the curious or those wanting to contribute:
+`/todo` lists all lists, `/todo <path>` opens one, `/todo <path>#<id>` opens a subtree.
 
-```
+| Key | Action |
+| --- | ------ |
+| ↑/↓ or j/k | Move selection |
+| Enter | Open selected list |
+| Backspace / Esc | Go back |
+| `b` | Subtree view: back to the full list |
+| `s` | Cycle sort (creation / completion / priority) |
+| `d` | Toggle task descriptions |
+| `q` / Ctrl+C | Close |
+
+## Development
+
+```text
 src/
-  index.ts    # extension factory: registers tool + command
-  tool.ts     # action dispatch, validation, content/details
-  db.ts       # node:sqlite wrapper (schema, transactions, tree fetch)
+  index.ts    # extension entry: registers the todo tool + /todo command
+  tool.ts     # action dispatch, validation, tool description
+  db.ts       # node:sqlite wrapper: schema, migrations, tree fetch
   paths.ts    # $scope/$name path parsing
-  render.ts   # tree → text (truncation-aware) + themed TUI variant
+  render.ts   # tree → text (truncation-aware) + themed TUI output
   command.ts  # /todo command + TUI viewer
+```
+
+```bash
+npm test
 ```
