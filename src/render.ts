@@ -45,6 +45,10 @@ export interface TreeView {
 	title?: string | null;
 	/** Root task text shown in header for subtree views. */
 	rootTaskText?: string;
+	/** Project directory the list belongs to — echoed in every header. */
+	projectPath?: string | null;
+	/** The list's overall goal — echoed in every header (incl. subtree views). */
+	description?: string | null;
 }
 
 export type SortMode = "creation" | "completion" | "priority";
@@ -115,11 +119,18 @@ export function countsOfTree(tree: TaskNode[]): Counts {
 }
 
 export function headerLine(view: TreeView): string {
-	const { counts, path, title, rootTaskText } = view;
+	const { counts, path, title, rootTaskText, projectPath, description } = view;
 	let namePart = path;
 	if (rootTaskText) namePart += ` "${rootTaskText}"`;
 	if (title) namePart += `  (${title})`;
-	const parts = [namePart, `${counts.done}/${counts.total} done`];
+	const parts = [namePart];
+	// Project context travels with every read — including subtree views — so a
+	// subagent given `list#id` still knows the project and the overall goal.
+	if (projectPath && projectPath.trim())
+		parts.push(`project: ${sanitize(projectPath)}`);
+	if (description && description.trim())
+		parts.push(`goal: ${sanitize(description)}`);
+	parts.push(`${counts.done}/${counts.total} done`);
 	if (counts.in_progress > 0) parts.push(`${counts.in_progress} in progress`);
 	return parts.join("  ·  ");
 }
@@ -250,8 +261,11 @@ export function renderLists(lists: ListSummary[]): string {
 	const lines = [`TODO lists (${lists.length}):`];
 	for (const l of lists) {
 		const titlePart = l.title ? `  (${l.title})` : "";
+		const projPart = l.project_path
+			? `  ·  project: ${sanitize(l.project_path)}`
+			: "";
 		lines.push(
-			`  ${l.path}${titlePart}  ·  ${l.counts.done}/${l.counts.total} done`,
+			`  ${l.path}${titlePart}${projPart}  ·  ${l.counts.done}/${l.counts.total} done`,
 		);
 	}
 	return lines.join("\n");
@@ -338,8 +352,11 @@ export function themedListsLines(
 			: `TODO lists (${lists.length}):`,
 	];
 	for (const l of lists) {
+		const proj = l.project_path
+			? `  ${theme.fg("muted", `· project: ${sanitize(l.project_path)}`)}`
+			: "";
 		out.push(
-			`  ${theme.fg("accent", l.path)}  ${theme.fg("muted", `· ${l.counts.done}/${l.counts.total} done`)}`,
+			`  ${theme.fg("accent", l.path)}  ${theme.fg("muted", `· ${l.counts.done}/${l.counts.total} done`)}${proj}`,
 		);
 	}
 	return out;

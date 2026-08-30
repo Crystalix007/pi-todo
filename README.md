@@ -38,6 +38,8 @@ Mark things done:
 
 **Lists** live at a path — `$scope/$name` (e.g. `my-project/tasks`) or just `/tasks` for root. Scope is everything before the last slash. Don't worry about exact formatting — `tasks`, `/tasks`, and `tasks/` all mean the same thing. Lists auto-create the first time you add a task.
 
+Each list carries optional metadata — a human `title`, a `project_path` (the directory the work belongs to), and a `description` (the overall goal). Set them when creating the list: `create {list, title, project_path, description}`. Every read of the list — including subtree views like `my-project/tasks#7` handed to a subagent — echoes the project path and goal, so a scoped subagent still knows what project it's working in and what the list is trying to achieve.
+
 **Tasks** are nested. A task can have subtasks (and those can have subtasks, arbitrarily deep). Every task has a `status` (`pending`, `in_progress`, or `done`) and a `priority` (`critical`, `high`, `medium`, or `low`). Checking something off means setting its status to `done`.
 
 **Pull the next task** with the `next` action — it finds the highest-priority pending task in a list (or across all lists). Mark things `in_progress` as you work on them and the `next` will skip past them.
@@ -53,12 +55,12 @@ All operations go through the `todo` tool. The agent picks an `action` and fills
 | `lists` | Show all TODO lists | — | `scope` to filter by scope |
 | `show` | View a list's task tree | `list` | `format` (`tree`\|`flat`), `status_filter` |
 | `add` | Create task(s) in one call | `list`, `items` | `under`, `priority` per item |
-| `update` | Edit text, note, status, or priority | `list`, `id`, at least one change | `cascade` to push status to all descendants |
+| `update` | Edit text, note, status, priority, or description | `list`, `id`, at least one change | `cascade` to push status to all descendants. Without `id`: updates the list itself (`title`, `project_path`, `description`; `''` clears) |
 | `move` | Reparent or reorder | `list`, `id` | `under` (new parent), `after` (sibling to place after) |
 | `next` | Pull the highest-priority pending task | `list` (optional; omit = all lists) | `status` (default `pending`) |
 | `delete` | Remove a task and its subtree | `list`, `id` | — |
 | `purge` | Clean up completed work | `list` | — |
-| `create` | Explicitly create a list | `list` | `title` |
+| `create` | Explicitly create a list | `list` | `title`, `project_path`, `description` |
 | `delete_list` | Remove a whole list | `list` | — |
 
 `purge` only removes tasks that are `done` with no pending descendants — it never deletes work you still need.

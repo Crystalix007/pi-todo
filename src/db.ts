@@ -49,9 +49,20 @@ export interface ListRow {
 	scope: string;
 	name: string;
 	title: string | null;
+	/** Project directory this list's work belongs to (set by the agent). */
+	project_path: string | null;
+	/** The list's overall goal — echoed in reads so scoped subagents keep context. */
+	description: string | null;
 	path: string;
 	created_at: number;
 	updated_at: number;
+}
+
+/** List-level metadata fields (title, project path, goal description). */
+export interface ListMetaInput {
+	title?: string | null;
+	project_path?: string | null;
+	description?: string | null;
 }
 
 export interface ListSummary extends ListRow {
@@ -137,6 +148,8 @@ CREATE TABLE IF NOT EXISTS lists (
   scope TEXT NOT NULL,
   name TEXT NOT NULL,
   title TEXT,
+  project_path TEXT,
+  description TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(scope, name)
@@ -274,6 +287,16 @@ async function initTodoDb(): Promise<TodoDb> {
 	} catch {
 		/* column exists */
 	}
+	try {
+		conn.exec("ALTER TABLE lists ADD COLUMN project_path TEXT");
+	} catch {
+		/* column exists */
+	}
+	try {
+		conn.exec("ALTER TABLE lists ADD COLUMN description TEXT");
+	} catch {
+		/* column exists */
+	}
 	return new TodoDb(conn);
 }
 
@@ -293,10 +316,10 @@ export class TodoDb {
 		this.conn = conn;
 		this.stmts = {
 			listsAll: conn.prepare(
-				"SELECT id, scope, name, title, created_at, updated_at FROM lists ORDER BY scope, name",
+				"SELECT id, scope, name, title, project_path, description, created_at, updated_at FROM lists ORDER BY scope, name",
 			),
 			getList: conn.prepare(
-				"SELECT id, scope, name, title, created_at, updated_at FROM lists WHERE scope = ? AND name = ?",
+				"SELECT id, scope, name, title, project_path, description, created_at, updated_at FROM lists WHERE scope = ? AND name = ?",
 			),
 			insertList: conn.prepare(
 				"INSERT OR IGNORE INTO lists (scope, name, title, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
@@ -304,14 +327,20 @@ export class TodoDb {
 			setListTitle: conn.prepare(
 				"UPDATE lists SET title = ?, updated_at = ? WHERE id = ?",
 			),
+			setListProjectPath: conn.prepare(
+				"UPDATE lists SET project_path = ?, updated_at = ? WHERE id = ?",
+			),
+			setListDescription: conn.prepare(
+				"UPDATE lists SET description = ?, updated_at = ? WHERE id = ?",
+			),
 			touchList: conn.prepare("UPDATE lists SET updated_at = ? WHERE id = ?"),
 			deleteList: conn.prepare("DELETE FROM lists WHERE id = ?"),
 
 			insertTask: conn.prepare(
 				"INSERT INTO tasks (list_id, parent_id, ord, text, status, note, tags, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			),
-				getTask: conn.prepare(
-						"SELECT id, list_id, parent_id, ord, text, status, priority, note, tags, description FROM tasks WHERE id = ?",
+			getTask: conn.prepare(
+				"SELECT id, list_id, parent_id, ord, text, status, priority, note, tags, description FROM tasks WHERE id = ?",
 			),
 			updateText: conn.prepare(
 				"UPDATE tasks SET text = ?, updated_at = ? WHERE id = ?",
@@ -328,10 +357,10 @@ export class TodoDb {
 			setTags: conn.prepare(
 				"UPDATE tasks SET tags = ?, updated_at = ? WHERE id = ?",
 			),
-				setDescription: conn.prepare(
-						"UPDATE tasks SET description = ?, updated_at = ? WHERE id = ?",
+			setDescription: conn.prepare(
+				"UPDATE tasks SET description = ?, updated_at = ? WHERE id = ?",
 			),
-				setParent: conn.prepare(
+			setParent: conn.prepare(
 				"UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
 			),
 			setOrd: conn.prepare("UPDATE tasks SET ord = ? WHERE id = ?"),
@@ -404,9 +433,7 @@ export class TodoDb {
 		// Segment-boundary match: "feature" matches scope "feature" and "feature/...",
 		// but NOT "feature-auth". Done in JS to avoid LIKE wildcard leaking.
 		const rows = prefix
-			? all.filter(
-					(r) => r.scope === prefix || r.scope.startsWith(`${prefix}/`),
-				)
+			? all.filter((r) => r.scope === prefix || r.scope.startsWith(`${prefix}/`))
 			: all;
 		return rows.map((r) => {
 			const path = r.scope ? `${r.scope}/${r.name}` : r.name;
@@ -414,19 +441,53 @@ export class TodoDb {
 		});
 	}
 
-	ensureList(scope: string, name: string, title?: string | null): ListRow {
+	ensureList(scope: string, name: string, meta?: ListMetaInput): ListRow {
 		const now = Date.now();
 		this.stmts.insertList.run(scope, name, now, now);
-		let row = this.getList(scope, name)!;
-		if (title != null && title !== "") {
-			this.stmts.setListTitle.run(title, Date.now(), row.id);
-			row = this.getList(scope, name)!;
+		const row = this.getList(scope, name);
+		if (!row) throw new Error(`Failed to create list '${scope}/${name}'.`);
+		// Create-time metadata is lenient: only non-empty values are applied, so
+		// re-ensuring an existing list never clobbers its metadata with blanks.
+		// Use setListMeta directly for explicit set/clear semantics.
+		const toApply: ListMetaInput = {};
+		if (meta?.title) toApply.title = meta.title;
+		if (meta?.project_path) toApply.project_path = meta.project_path;
+		if (meta?.description) toApply.description = meta.description;
+		if (Object.keys(toApply).length > 0) {
+			this.setListMeta(row.id, toApply);
+			return this.getList(scope, name) ?? row;
 		}
 		return row;
 	}
 
 	setListTitle(id: number, title: string | null): void {
 		this.stmts.setListTitle.run(title, Date.now(), id);
+	}
+
+	/**
+	 * Explicitly set/clear list metadata.
+	 * undefined = leave unchanged; null or "" = clear; non-empty string = set.
+	 */
+	setListMeta(id: number, meta: ListMetaInput): void {
+		const now = Date.now();
+		if (meta.title !== undefined) {
+			this.stmts.setListTitle.run(meta.title === "" ? null : meta.title, now, id);
+		}
+		if (meta.project_path !== undefined) {
+			this.stmts.setListProjectPath.run(
+				meta.project_path === "" ? null : meta.project_path,
+				now,
+				id,
+			);
+		}
+		if (meta.description !== undefined) {
+			this.stmts.setListDescription.run(
+				meta.description === "" ? null : meta.description,
+				now,
+				id,
+			);
+		}
+		this.touchList(id);
 	}
 
 	deleteList(id: number): void {
@@ -517,8 +578,7 @@ export class TodoDb {
 			this.stmts.updateStatus.run(spec.status, now, id);
 			if (spec.cascade) {
 				const ids = this.descendantIds(listId, id);
-				for (const did of ids)
-					this.stmts.updateStatus.run(spec.status, now, did);
+				for (const did of ids) this.stmts.updateStatus.run(spec.status, now, did);
 			}
 		}
 		if (spec.priority !== undefined) {

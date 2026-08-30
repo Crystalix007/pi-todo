@@ -120,12 +120,21 @@ function buildListSummary(db: TodoDb, path: string): string {
 				counts,
 				path: showPath,
 				title: list.title,
+				projectPath: list.project_path,
+				description: list.description,
 				rootTaskText: rootText,
 			}).text;
 		}
 		const tree = db.fetchTree(list.id);
 		const counts = db.countsFor(list.id);
-		return renderTree({ tree, counts, path: ref.path, title: list.title }).text;
+		return renderTree({
+			tree,
+			counts,
+			path: ref.path,
+			title: list.title,
+			projectPath: list.project_path,
+			description: list.description,
+		}).text;
 	});
 }
 
@@ -164,12 +173,7 @@ class TodoViewer {
 	private subtreeRootId: number | null = null;
 	private fullListPath: string | null = null;
 
-	constructor(
-		db: TodoDb,
-		theme: any,
-		heightFn: () => number,
-		done: () => void,
-	) {
+	constructor(db: TodoDb, theme: any, heightFn: () => number, done: () => void) {
 		this.db = db;
 		this.theme = theme;
 		this.heightFn = heightFn;
@@ -220,7 +224,10 @@ class TodoViewer {
 			listPaths.push(l.path);
 			const counts = this.muted(`· ${l.counts.done}/${l.counts.total} done`);
 			const title = l.title ? this.dim(`  (${l.title})`) : "";
-			lines.push(`  ${this.accent(l.path)} ${title} ${counts}`);
+			const proj = l.project_path
+				? this.dim(`  · project: ${l.project_path}`)
+				: "";
+			lines.push(`  ${this.accent(l.path)}${title}${proj} ${counts}`);
 		}
 		lines.push("");
 		lines.push(this.dim("↑/↓ select · Enter open · Esc close"));
@@ -262,6 +269,8 @@ class TodoViewer {
 				path: `${fullPath}#${rootTaskId}`,
 				title: data.list.title,
 				rootTaskText: rootText,
+				projectPath: data.list.project_path,
+				description: data.list.description,
 			},
 			this.theme,
 			opts,
@@ -310,7 +319,14 @@ class TodoViewer {
 		sortTree(data.tree, this.sortMode);
 		const opts: ShowOpts = { showDescriptions: this.showDescriptions };
 		const body = themedTreeLines(
-			{ tree: data.tree, counts: data.counts, path, title: data.list.title },
+			{
+				tree: data.tree,
+				counts: data.counts,
+				path,
+				title: data.list.title,
+				projectPath: data.list.project_path,
+				description: data.list.description,
+			},
 			this.theme,
 			opts,
 		);

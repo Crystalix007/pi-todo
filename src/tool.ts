@@ -67,6 +67,7 @@ export interface TodoParamsInput {
 	list?: string;
 	scope?: string;
 	title?: string;
+	project_path?: string;
 	items?: TaskItemInput[];
 	under?: number;
 	id?: number;
@@ -144,7 +145,16 @@ export const TodoToolParams = Type.Object({
 		}),
 	),
 	title: Type.Optional(
-		Type.String({ description: "(create) Optional human title for the list." }),
+		Type.String({
+			description:
+				"(create) Human title for the list; (update without id) new title. Pass '' to clear.",
+		}),
+	),
+	project_path: Type.Optional(
+		Type.String({
+			description:
+				"(create|update without id) Project directory this list's work belongs to (e.g. the repo path). Echoed in every read of the list — including subtree views handed to subagents — so context survives scoping. Pass '' to clear.",
+		}),
 	),
 	items: Type.Optional(
 		Type.Array(TaskItem, {
@@ -190,7 +200,7 @@ export const TodoToolParams = Type.Object({
 	description: Type.Optional(
 		Type.String({
 			description:
-				"(update) Optional multi-line description. Pass empty string '' to clear. (add: set per item in items[].description)",
+				"(create|update without id) The list's overall goal — echoed in every read (incl. subtree views). (update with id) Per-task multi-line description. (add: set per item in items[].description) Pass empty string '' to clear.",
 		}),
 	),
 	cascade: Type.Optional(
@@ -347,7 +357,15 @@ async function doShow(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		return { list: l, tree: db.fetchTree(l.id), counts: db.countsFor(l.id) };
 	});
 	const content = renderTree(
-		{ tree, counts, path: showPath, title: list.title },
+		{
+			tree,
+			counts,
+			path: showPath,
+			title: list.title,
+			projectPath: list.project_path,
+			description: list.description,
+			rootTaskText: ref.rootTaskId != null ? tree[0]?.text : undefined,
+		},
 		{ format: p.format, statusFilter: p.status_filter },
 	);
 	return ok({ action: "show", list: listRef(list), tree, counts }, content);
@@ -356,10 +374,21 @@ async function doShow(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 async function doCreate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
 	const { list, tree, counts } = db.txn(() => {
-		const l = db.ensureList(scope, name, p.title ?? null);
+		const l = db.ensureList(scope, name, {
+			title: p.title ?? null,
+			project_path: p.project_path ?? null,
+			description: p.description ?? null,
+		});
 		return { list: l, tree: db.fetchTree(l.id), counts: db.countsFor(l.id) };
 	});
-	const content = renderTree({ tree, counts, path, title: list.title });
+	const content = renderTree({
+		tree,
+		counts,
+		path,
+		title: list.title,
+		projectPath: list.project_path,
+		description: list.description,
+	});
 	return ok(
 		{
 			action: "create",
@@ -381,7 +410,7 @@ async function doAdd(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 
 	const result = db.txn(() => {
 		const created = db.getList(scope, name) == null;
-		const list = db.ensureList(scope, name, null);
+		const list = db.ensureList(scope, name);
 		if (p.under !== undefined && p.under !== null) {
 			if (p.under <= 0) {
 				throw new Error(
@@ -439,6 +468,8 @@ async function doAdd(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	const addedLine =
 		result.addedIds.length > 0
@@ -462,8 +493,16 @@ async function doAdd(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 
 async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
-	if (p.id === undefined || p.id === null)
-		throw new Error("'id' is required for action 'update'.");
+
+	// No id → list-level metadata update (title / project_path / description).
+	if (p.id === undefined || p.id === null) {
+		return doUpdateListMeta(db, p, scope, name, path);
+	}
+	if (p.title !== undefined || p.project_path !== undefined) {
+		throw new Error(
+			"'title' and 'project_path' are list-level fields — omit 'id' to update the list's metadata (they cannot be combined with a task update).",
+		);
+	}
 	if (
 		p.text === undefined &&
 		p.note === undefined &&
@@ -502,6 +541,8 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	return ok(
 		{
@@ -510,6 +551,61 @@ async function doUpdate(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 			tree: result.tree,
 			counts: result.counts,
 			affected: { updated: 1 },
+		},
+		content,
+	);
+}
+
+/** `update` without an id: set/clear list-level metadata (title, project_path, description). */
+async function doUpdateListMeta(
+	db: TodoDb,
+	p: TodoParamsInput,
+	scope: string,
+	name: string,
+	path: string,
+): Promise<ActionResult> {
+	if (
+		p.title === undefined &&
+		p.project_path === undefined &&
+		p.description === undefined
+	) {
+		throw new Error(
+			"Action 'update' needs a task 'id' to edit a task, or list metadata fields (title, project_path, description) to update the list itself.",
+		);
+	}
+	const result = db.txn(() => {
+		const list = db.getList(scope, name);
+		if (!list)
+			throw new Error(
+				`List '${path}' not found. Use action 'lists' to see available lists.`,
+			);
+		db.setListMeta(list.id, {
+			title: p.title,
+			project_path: p.project_path,
+			description: p.description,
+		});
+		const updated = db.getList(scope, name) ?? list;
+		return {
+			list: updated,
+			tree: db.fetchTree(list.id),
+			counts: db.countsFor(list.id),
+		};
+	});
+	const content = renderTree({
+		tree: result.tree,
+		counts: result.counts,
+		path,
+		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
+	});
+	return ok(
+		{
+			action: "update",
+			list: listRef(result.list),
+			tree: result.tree,
+			counts: result.counts,
+			affected: { updated_list: true },
 		},
 		content,
 	);
@@ -537,6 +633,8 @@ async function doMove(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	return ok(
 		{
@@ -574,6 +672,8 @@ async function doDelete(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	return ok(
 		{
@@ -636,6 +736,8 @@ async function doPurge(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	return ok(
 		{
@@ -684,6 +786,9 @@ async function doNext(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 			counts: result.counts,
 			path: result.path,
 			title: result.list.title,
+			projectPath: result.list.project_path,
+			description: result.list.description,
+			rootTaskText: ref.rootTaskId != null ? result.tree[0]?.text : undefined,
 		});
 		const content = result.task
 			? {
@@ -739,6 +844,8 @@ async function doNext(db: TodoDb, p: TodoParamsInput): Promise<ActionResult> {
 		counts: result.counts,
 		path,
 		title: result.list.title,
+		projectPath: result.list.project_path,
+		description: result.list.description,
 	});
 	return ok(
 		{
@@ -783,11 +890,19 @@ function nextTaskDetails(task: {
 
 // ---- details helpers ----
 
-function listRef(l: { scope: string; name: string; title: string | null }): {
+function listRef(l: {
+	scope: string;
+	name: string;
+	title: string | null;
+	project_path?: string | null;
+	description?: string | null;
+}): {
 	scope: string;
 	name: string;
 	path: string;
 	title?: string;
+	project_path?: string;
+	description?: string;
 } {
 	const path = l.scope ? `${l.scope}/${l.name}` : l.name;
 	return {
@@ -795,6 +910,8 @@ function listRef(l: { scope: string; name: string; title: string | null }): {
 		name: l.name,
 		path,
 		...(l.title ? { title: l.title } : {}),
+		...(l.project_path ? { project_path: l.project_path } : {}),
+		...(l.description ? { description: l.description } : {}),
 	};
 }
 
@@ -803,6 +920,8 @@ function listSummaryToDetails(l: ListSummary): {
 	name: string;
 	path: string;
 	title?: string;
+	project_path?: string;
+	description?: string;
 	counts: Counts;
 } {
 	return {
@@ -810,6 +929,8 @@ function listSummaryToDetails(l: ListSummary): {
 		name: l.name,
 		path: l.path,
 		...(l.title ? { title: l.title } : {}),
+		...(l.project_path ? { project_path: l.project_path } : {}),
+		...(l.description ? { description: l.description } : {}),
 		counts: l.counts,
 	};
 }
@@ -831,7 +952,7 @@ export function buildTodoToolDef(deps: TodoToolDeps) {
 			"After mutating with todo, the returned tree shows the current state — no need to call todo show again.",
 			"Author a whole nested plan in one todo add call using items[] with ref/underRef (e.g. [{ref:'p',text:'Parent'},{text:'Child',underRef:'p'}]).",
 			"Pull the next task with the 'next' action, then mark it in_progress with update (next is read-only and returns next_task:null when the queue is empty).",
-			"Scope a subagent's work with a subtree ref: list 'scope/name#id' limits show/next to that task's descendants.",
+			"Scope a subagent's work with a subtree ref: list 'scope/name#id' limits show/next to that task's descendants. Set project_path and description (the goal) when creating a list — subtree views echo them so scoped subagents keep the project context.",
 		],
 		parameters: TodoToolParams,
 		async execute(
@@ -858,14 +979,14 @@ function buildDescription(): string {
 	return [
 		"Manage persistent, named TODO lists with nested tasks. Lists are named '$scope/$name' (scoped) or '/$name' or '$name' (root). State is persisted in SQLite.",
 		"",
-		"Subtree refs: append '#<task-id>' to a list path (e.g. 'feature/auth#7') to scope show/next to that task and its descendants — useful when handing a subagent a focused subset.",
+		"Subtree refs: append '#<task-id>' to a list path (e.g. 'feature/auth#7') to scope show/next to that task and its descendants — useful when handing a subagent a focused subset. Subtree reads still show the list's project path and overall goal, so scoped subagents keep the project context.",
 		"",
 		"ACTIONS (the 'action' field selects one; relevant fields shown):",
 		"- lists: list all TODO lists. Optional 'scope' filters by scope name or segment prefix.",
 		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter'.",
-		"- create {list} [title]: create/ensure a list exists (optionally set a title).",
+		"- create {list} [title] [project_path] [description]: create/ensure a list exists. title = human label; project_path = project directory the work belongs to; description = the overall goal. All three are echoed in every read of the list (including subtree views).",
 		"- add {list, items[, under]}: add task(s). 'items' is an array; each may have 'priority' (critical|high|medium|low, default medium). Nest via ref/underRef. 'under'=existing task id in THIS list to attach top-level items under.",
-		"- update {list, id, text|note|status|priority|tags|description[, cascade]}: edit a task. Pass '' to clear note/description, [] to clear tags.",
+		"- update {list, id, text|note|status|priority|tags|description[, cascade]}: edit a task. Pass '' to clear note/description, [] to clear tags. WITHOUT 'id': updates the list itself instead — title, project_path, description ('' clears a field).",
 		"- move {list, id[, under][, after]}: reparent/reorder. Omitting 'under' moves the task to top level; 'after'=sibling id within the destination parent (a non-sibling id is appended).",
 		"- delete {list, id}: remove a task and its whole subtree (reports how many tasks were removed).",
 		"- delete_list {list}: remove an entire list and all its tasks.",

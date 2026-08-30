@@ -212,3 +212,122 @@ test("parseListPath still parses subtree refs (no regression)", () => {
 	assert.equal(ref.name, "auth");
 	assert.equal(ref.rootTaskId, 7);
 });
+
+// ---------------------------------------------------------------------------
+// List metadata: project_path + description (goal) exposed in every read
+// ---------------------------------------------------------------------------
+
+test("create stores project_path + description; reads echo them", async () => {
+	const created = await dispatchTodo(db, {
+		action: "create",
+		list: "projctx/feat",
+		title: "Feature work",
+		project_path: "/tmp/my-app",
+		description: "Ship the billing page",
+	});
+	assert.equal(created.details.list.project_path, "/tmp/my-app");
+	assert.equal(created.details.list.description, "Ship the billing page");
+
+	// Full-list show echoes both in the header.
+	const show = await dispatchTodo(db, { action: "show", list: "projctx/feat" });
+	assert.match(show.content.text, /project: \/tmp\/my-app/);
+	assert.match(show.content.text, /goal: Ship the billing page/);
+
+	// lists output carries the project path too.
+	const lists = await dispatchTodo(db, { action: "lists", scope: "projctx" });
+	assert.match(lists.content.text, /project: \/tmp\/my-app/);
+
+	// Add tasks, then a SUBTREE read must still carry the project context +
+	// overall goal (this is what a scoped subagent sees).
+	const added = await dispatchTodo(db, {
+		action: "add",
+		list: "projctx/feat",
+		items: [
+			{ ref: "p", text: "root" },
+			{ text: "leaf", underRef: "p" },
+		],
+	});
+	const rootId = (added.details.added_items as number[])[0];
+	const sub = await dispatchTodo(db, {
+		action: "show",
+		list: `projctx/feat#${rootId}`,
+	});
+	assert.match(sub.content.text, /project: \/tmp\/my-app/);
+	assert.match(sub.content.text, /goal: Ship the billing page/);
+	// The subtree header also names the root task.
+	assert.match(sub.content.text, new RegExp(`#${rootId} "root"`));
+
+	// Subtree next carries it too.
+	const next = await dispatchTodo(db, {
+		action: "next",
+		list: `projctx/feat#${rootId}`,
+	});
+	assert.match(next.content.text, /project: \/tmp\/my-app/);
+	assert.match(next.content.text, /goal: Ship the billing page/);
+});
+
+test("update without id edits list metadata; '' clears a field", async () => {
+	await dispatchTodo(db, {
+		action: "create",
+		list: "projctx/meta",
+		project_path: "/tmp/a",
+	});
+
+	const up = await dispatchTodo(db, {
+		action: "update",
+		list: "projctx/meta",
+		project_path: "/tmp/b",
+		description: "the new goal",
+		title: "Retitled",
+	});
+	assert.equal(up.details.list.project_path, "/tmp/b");
+	assert.equal(up.details.list.description, "the new goal");
+	assert.equal(up.details.list.title, "Retitled");
+	assert.equal(up.details.affected.updated_list, true);
+
+	const cleared = await dispatchTodo(db, {
+		action: "update",
+		list: "projctx/meta",
+		project_path: "",
+	});
+	assert.equal(cleared.details.list.project_path, undefined);
+	// Others survive the partial clear.
+	assert.equal(cleared.details.list.description, "the new goal");
+
+	// Nothing given → still an actionable error.
+	await assert.rejects(
+		dispatchTodo(db, { action: "update", list: "projctx/meta" }),
+		/needs a task 'id'|list metadata fields/,
+	);
+});
+
+test("task update cannot silently mix in list-level fields", async () => {
+	await dispatchTodo(db, {
+		action: "create",
+		list: "projctx/taskupd",
+	});
+	const added = await dispatchTodo(db, {
+		action: "add",
+		list: "projctx/taskupd",
+		items: [{ text: "a task" }],
+	});
+	const taskId = (added.details.added_items as number[])[0];
+	await assert.rejects(
+		dispatchTodo(db, {
+			action: "update",
+			list: "projctx/taskupd",
+			id: taskId,
+			title: "oops",
+		}),
+		/list-level fields/,
+	);
+	// description with an id is still a per-task description.
+	const ok = await dispatchTodo(db, {
+		action: "update",
+		list: "projctx/taskupd",
+		id: taskId,
+		description: "per-task note",
+	});
+	assert.equal(ok.details.list.description, undefined); // not list metadata
+	assert.equal(ok.details.affected.updated, 1);
+});

@@ -55,6 +55,8 @@ export default function (pi: ExtensionAPI): void {
 							counts,
 							path: d.list.path,
 							title: d.list.title,
+							projectPath: d.list.project_path,
+							description: d.list.description,
 						},
 						theme,
 					);
@@ -92,5 +94,6 @@ function formatAffected(affected: Record<string, unknown> | undefined): string {
 		parts.push(`deleted ${affected.deleted}`);
 	if (affected.moved) parts.push("moved");
 	if (affected.created_list) parts.push("new list");
+	if (affected.updated_list) parts.push("updated list");
 	return parts.join(", ");
 }
