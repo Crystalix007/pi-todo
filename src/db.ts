@@ -49,10 +49,10 @@ export interface ListRow {
 	scope: string;
 	name: string;
 	title: string | null;
-	/** Project directory this list's work belongs to (set by the agent). */
-	project_path: string | null;
-	/** The list's overall goal — echoed in reads so scoped subagents keep context. */
-	description: string | null;
+	/** Project directory this list's work belongs to (set by the agent). Empty = unset. */
+	project_path: string;
+	/** The list's overall goal — echoed in reads so scoped subagents keep context. Empty = unset. */
+	description: string;
 	path: string;
 	created_at: number;
 	updated_at: number;
@@ -148,8 +148,8 @@ CREATE TABLE IF NOT EXISTS lists (
   scope TEXT NOT NULL,
   name TEXT NOT NULL,
   title TEXT,
-  project_path TEXT,
-  description TEXT,
+  project_path TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(scope, name)
@@ -296,6 +296,55 @@ async function initTodoDb(): Promise<TodoDb> {
 		conn.exec("ALTER TABLE lists ADD COLUMN description TEXT");
 	} catch {
 		/* column exists */
+	}
+	// project_path / description must be NOT NULL. Older releases added them as
+	// nullable; backfill any NULLs (they mean "unset" → '') and rebuild the table
+	// to enforce NOT NULL. A fresh DB already has NOT NULL DEFAULT '' from the
+	// schema above, so the rebuild is a no-op there.
+	const listCols = conn.prepare("PRAGMA table_info(lists)").all() as {
+		name: string;
+		notnull: number;
+	}[];
+	const projCol = listCols.find((c) => c.name === "project_path");
+	const descCol = listCols.find((c) => c.name === "description");
+	if (projCol || descCol) {
+		conn.exec("UPDATE lists SET project_path = '' WHERE project_path IS NULL");
+		conn.exec("UPDATE lists SET description = '' WHERE description IS NULL");
+	}
+	if (
+		(projCol && projCol.notnull === 0) ||
+		(descCol && descCol.notnull === 0)
+	) {
+		// Standard SQLite table-rebuild (foreign_keys is a no-op inside a txn,
+		// so this must run outside one; we are in autocommit here).
+		conn.exec("PRAGMA foreign_keys = OFF;");
+		try {
+			conn.exec(`
+CREATE TABLE lists_new (
+  id INTEGER PRIMARY KEY,
+  scope TEXT NOT NULL,
+  name TEXT NOT NULL,
+  title TEXT,
+  project_path TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(scope, name)
+);
+INSERT INTO lists_new (id, scope, name, title, project_path, description, created_at, updated_at)
+  SELECT id, scope, name, title, COALESCE(project_path, ''), COALESCE(description, ''), created_at, updated_at FROM lists;
+DROP TABLE lists;
+ALTER TABLE lists_new RENAME TO lists;
+`);
+		} finally {
+			conn.exec("PRAGMA foreign_keys = ON;");
+		}
+		const violations = conn.prepare("PRAGMA foreign_key_check").all();
+		if (violations.length > 0) {
+			throw new Error(
+				`lists NOT NULL rebuild left ${violations.length} foreign-key violation(s).`,
+			);
+		}
 	}
 	return new TodoDb(conn);
 }
@@ -467,25 +516,22 @@ export class TodoDb {
 	/**
 	 * Explicitly set/clear list metadata.
 	 * undefined = leave unchanged; null or "" = clear; non-empty string = set.
+	 * project_path/description are NOT NULL — "cleared" is stored as ''.
 	 */
 	setListMeta(id: number, meta: ListMetaInput): void {
 		const now = Date.now();
+		const cleared = (v: string | null | undefined): string | null =>
+			v == null || v === "" ? null : v;
 		if (meta.title !== undefined) {
-			this.stmts.setListTitle.run(meta.title === "" ? null : meta.title, now, id);
+			this.stmts.setListTitle.run(cleared(meta.title), now, id);
 		}
 		if (meta.project_path !== undefined) {
-			this.stmts.setListProjectPath.run(
-				meta.project_path === "" ? null : meta.project_path,
-				now,
-				id,
-			);
+			const v = cleared(meta.project_path);
+			this.stmts.setListProjectPath.run(v === null ? "" : v, now, id);
 		}
 		if (meta.description !== undefined) {
-			this.stmts.setListDescription.run(
-				meta.description === "" ? null : meta.description,
-				now,
-				id,
-			);
+			const v = cleared(meta.description);
+			this.stmts.setListDescription.run(v === null ? "" : v, now, id);
 		}
 		this.touchList(id);
 	}

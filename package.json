@@ -26,6 +26,6 @@
     "@types/node": "*"
   },
   "scripts": {
-    "test": "node --test tests/todo.test.ts"
+    "test": "node --test \"tests/*.test.ts\""
   }
 }
