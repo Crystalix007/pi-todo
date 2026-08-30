@@ -311,10 +311,7 @@ async function initTodoDb(): Promise<TodoDb> {
 		conn.exec("UPDATE lists SET project_path = '' WHERE project_path IS NULL");
 		conn.exec("UPDATE lists SET description = '' WHERE description IS NULL");
 	}
-	if (
-		(projCol && projCol.notnull === 0) ||
-		(descCol && descCol.notnull === 0)
-	) {
+	if ((projCol && projCol.notnull === 0) || (descCol && descCol.notnull === 0)) {
 		// Standard SQLite table-rebuild (foreign_keys is a no-op inside a txn,
 		// so this must run outside one; we are in autocommit here).
 		conn.exec("PRAGMA foreign_keys = OFF;");

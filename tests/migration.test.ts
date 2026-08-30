@@ -145,14 +145,8 @@ test("nullable-columns DB (previous release) rebuilds to NOT NULL, preserving se
 				.prepare("PRAGMA table_info(lists)")
 				.all()
 				.map((c: any) => ({ name: c.name, notnull: c.notnull }));
-			assert.equal(
-				cols.find((c) => c.name === "project_path")?.notnull,
-				1,
-			);
-			assert.equal(
-				cols.find((c) => c.name === "description")?.notnull,
-				1,
-			);
+			assert.equal(cols.find((c) => c.name === "project_path")?.notnull, 1);
+			assert.equal(cols.find((c) => c.name === "description")?.notnull, 1);
 			chk.close();
 		},
 	);
