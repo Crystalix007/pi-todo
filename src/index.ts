@@ -11,14 +11,20 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-import { closeTodoDb, getDb } from "./db.ts";
+import { captureExtensionCaller } from "./binding.ts";
 import { registerTodoCommand } from "./command.ts";
+import { closeTodoDb, getDb, type Counts, type TaskNode } from "./db.ts";
 import { themedTreeLines } from "./render.ts";
 import { buildTodoToolDef } from "./tool.ts";
-import type { Counts, TaskNode } from "./db.ts";
 
 export default function (pi: ExtensionAPI): void {
-	const deps = { getDb };
+	// Capture the launch-time binding ONCE per factory/session initialization.
+	// Foreground children restore the parent's environment after startup;
+	// background children retain theirs. Retained subagent resume relaunches
+	// with the original payload.
+	// The tool and the command surface therefore share this one immutable
+	// caller instead of re-reading the environment per call.
+	const deps = Object.freeze({ getDb, caller: captureExtensionCaller() });
 
 	const toolDef = buildTodoToolDef(deps);
 
@@ -30,6 +36,8 @@ export default function (pi: ExtensionAPI): void {
 				theme.fg("muted", String(args?.action ?? ""));
 			if (args?.list) text += ` ${theme.fg("dim", String(args.list))}`;
 			if (args?.id != null) text += ` ${theme.fg("accent", `#${args.id}`)}`;
+			if (typeof args?.namespace === "string" && args.namespace)
+				text += ` ${theme.fg("muted", `namespace=${args.namespace}`)}`;
 			if (args?.items) text += ` ${theme.fg("dim", `+${args.items.length}`)}`;
 			return new Text(text, 0, 0);
 		},
@@ -40,9 +48,16 @@ export default function (pi: ExtensionAPI): void {
 			const d = result?.details ?? {};
 			const contentText = result?.content?.[0]?.text ?? "";
 
-			// lists action → compact count
+			// lists action → compact count (namespace shown only when non-global)
 			if (Array.isArray(d.lists)) {
-				return new Text(theme.fg("muted", `${d.lists.length} list(s)`), 0, 0);
+				return new Text(
+					theme.fg(
+						"muted",
+						`${d.lists.length} list(s)${namespaceSuffix(d.namespace)}`,
+					),
+					0,
+					0,
+				);
 			}
 
 			// list-scoped result
@@ -57,6 +72,9 @@ export default function (pi: ExtensionAPI): void {
 							title: d.list.title,
 							projectPath: d.list.project_path,
 							description: d.list.description,
+							// Details carry the label form; "global" must stay header-free.
+							namespace:
+								d.list.namespace === "global" ? "" : d.list.namespace,
 						},
 						theme,
 					);
@@ -67,6 +85,8 @@ export default function (pi: ExtensionAPI): void {
 					theme.fg("accent", d.list.path) +
 					" " +
 					theme.fg("muted", `${counts.done}/${counts.total} done`);
+				const ns = namespaceSuffix(d.namespace);
+				if (ns) t += theme.fg("dim", ns);
 				const aff = formatAffected(d.affected);
 				if (aff) t += ` ${theme.fg("dim", aff)}`;
 				if (d.truncated) t += ` ${theme.fg("warning", "(truncated)")}`;
@@ -83,6 +103,13 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		void closeTodoDb();
 	});
+}
+
+/** ` · namespace: <label>` for named/wildcard scopes; empty for global lists. */
+function namespaceSuffix(label: unknown): string {
+	if (typeof label !== "string" || label === "" || label === "global")
+		return "";
+	return ` · namespace: ${label}`;
 }
 
 function formatAffected(affected: Record<string, unknown> | undefined): string {
