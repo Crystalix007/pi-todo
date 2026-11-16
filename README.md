@@ -42,15 +42,71 @@ my-app/sprint  (Sprint 24)  ·  project: /Users/me/code/my-app  ·  goal: Ship v
 
 **Subtree refs.** Append `#<task-id>` to a list path (`feature/auth#7`) to scope `show`/`next` to that task and its descendants. This is the standard way to hand a subagent a bounded slice of a plan.
 
+## Namespaces and subagents
+
+Namespaces are opt-in isolation labels on lists. **Ordinary use is unchanged:** a session with no binding reads and writes the global namespace exactly as before, `/todo` still shows global lists, and nothing is isolated automatically.
+
+The parent chooses a unique namespace before launch, such as `job-42-worker-a`. Names are case-sensitive: 1–64 letters, digits, `.`, `_`, or `-`, starting with a letter or digit; `global` and `*` are reserved selectors. The namespace is separate from the list path.
+
+Precreate a child's plan with ordinary `todo` calls:
+
+```jsonc
+{ "action": "create", "list": "tasks", "namespace": "job-42-worker-a",
+  "title": "Worker A", "project_path": "/repo", "description": "Refactor auth" }
+{ "action": "add", "list": "tasks", "namespace": "job-42-worker-a",
+  "items": [{ "text": "Refactor the auth flow" }] }
+```
+
+**Alternatively**, copy an existing global plan into a **new** destination (do not precreate it):
+
+```json
+{ "action": "create", "list": "tasks", "namespace": "job-42-worker-a",
+  "from": "feature-auth/tasks", "from_namespace": "global" }
+```
+
+Configure a pi-subagents profile that admits `todo`, for example `.pi/agents/todo-worker.md`:
+
+```markdown
+---
+name: todo-worker
+description: Worker with TODO access
+tools: todo, read, bash, edit, write
+---
+Use your local TODO plan to complete the assigned work.
+```
+
+Launch using that profile and the existing pi-subagents extension:
+
+```js
+subagent({
+  agent: "todo-worker",
+  task: "Work through your local TODO list 'tasks'.",
+  async: true,
+  options: {
+    extensionBindings: { "pi-todo/1": { namespace: "job-42-worker-a" } }
+  }
+});
+```
+
+pi-subagents supplies the binding as `PI_SUBAGENT_EXTENSION_BINDINGS`. Native background children can load an installed pi-todo through ambient extensions; when ambient loading is disabled, configure its extension path explicitly (for example, `subagentOnlyExtensions`). A restrictive tool allowlist must include `todo`. Retained **subagent** resume replays the original binding; do not supply a new binding on resume.
+
+Inside a bound session, `show {list: "tasks"}` addresses its local plan. `namespace: "global"` explicitly reaches ordinary shared lists, including scoped paths such as `feature-auth/tasks`. All mutations of existing globals are allowed, including metadata changes, `purge`, and `delete_list`; creating missing global lists is refused. Sibling namespaces and `*` are refused before any query.
+
+The parent stays global by default: its `lists`/`next` never include child lists. To inspect child work, ask explicitly — `{"action":"lists","namespace":"*"}` discovers every persisted namespace, `/todo --namespace job-42-worker-a` browses a chosen one, and `/todo --namespace *` lists all of them. This does not change the default global queue.
+
+Copies are atomic, one-shot snapshots: fresh ids, source untouched, no sync-back, and no namespace registry or GC. Parents read a child's plan with `show {list: "tasks", namespace: "job-42-worker-a"}`. Keep `PI_TODO_DB` shared; do not select a separate database per child.
+
+Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does not implicitly pass bindings to nested subagent launches: give each isolated grandchild an explicit binding. Arbitrary shell-spawned processes can still inherit the environment. V1 targets native background children and retained subagent resume; external CLI adapters, standalone session resume, and foreground reload are not supported.
+
 **The `/todo` viewer is read-only.** It is for humans. All changes go through the `todo` tool; ask the agent to make them.
 
 ## Actions
 
 | Action | Purpose | Key fields |
 | ------ | ------- | ---------- |
-| `lists` | List all lists | `scope` (prefix filter) |
+| `lists` | List all lists | `scope` (prefix filter), `namespace` (`global`\|`*`\|name) |
 | `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter` |
-| `create` | Create a list | `list`, `title`, `project_path`, `description` |
+| `create` | Create a list (or copy one) | `list`, `title`, `project_path`, `description`, `from`, `from_namespace` |
 | `add` | Add task(s) | `list`, `items[]`, `under` |
 | `update` | Edit a task, or list metadata | `list` + `id`, or `list` only |
 | `move` | Reparent / reorder a task | `list`, `id`, `under`, `after` |
@@ -61,6 +117,7 @@ my-app/sprint  (Sprint 24)  ·  project: /Users/me/code/my-app  ·  goal: Ship v
 
 Field semantics:
 
+- Every action accepts `namespace` (`global`, a parent-assigned name, or `*` for parent discovery on `lists`). Omit it for the session's default: global when unbound, the bound namespace for a child. It is separate from the list path — never a path prefix.
 - `update` with an `id` edits the task: `text`, `note`, `status`, `priority`, `tags`, `description`. `cascade` pushes a status change to all descendants. `''` clears `note`/`description`, `[]` clears `tags`.
 - `update` without an `id` edits the list: `title`, `project_path`, `description`. `''` clears a field.
 - `add` nests via `ref`/`underRef` (below) and attaches under an existing task with `under`.
@@ -90,7 +147,13 @@ Data is stored in `~/.pi/agent/todo.db` (SQLite, WAL mode). Lists survive restar
 
 ## `/todo` viewer
 
-`/todo` lists all lists, `/todo <path>` opens one, `/todo <path>#<id>` opens a subtree.
+`/todo` lists the caller's default namespace, `/todo <path>` opens one list, `/todo <path>#<id>` opens a subtree. Namespaces are a leading flag only (other text stays a legacy path):
+
+```text
+/todo --namespace job-42-worker-a            lists that namespace
+/todo --namespace job-42-worker-a tasks#7    opens a list/subtree there
+/todo --namespace *                          parent only: every namespace, labelled
+```
 
 | Key | Action |
 | --- | ------ |
@@ -107,13 +170,17 @@ Data is stored in `~/.pi/agent/todo.db` (SQLite, WAL mode). Lists survive restar
 ```text
 src/
   index.ts    # extension entry: registers the todo tool + /todo command
+  binding.ts  # one-time capture of PI_SUBAGENT_EXTENSION_BINDINGS
+  namespace.ts # namespace policy (identifiers, caller, scope resolution)
   tool.ts     # action dispatch, validation, tool description
   db.ts       # node:sqlite wrapper: schema, migrations, tree fetch
   paths.ts    # $scope/$name path parsing
   render.ts   # tree → text (truncation-aware) + themed TUI output
-  command.ts  # /todo command + TUI viewer
+  command.ts  # /todo command + namespace-aware TUI viewer
 ```
 
 ```bash
+npm ci
 npm test
+npm run typecheck
 ```

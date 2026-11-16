@@ -58,9 +58,26 @@ Useful for assigning a subagent a focused subset of work.
 
 Named `$scope/$name` (scoped) or just `$name` (root). Auto-created on first `add`.
 
+### Namespaces (subagent isolation)
+
+Ordinary sessions are unbound: keep omitting `namespace`; global lists and `next` are unchanged.
+
+Parent workflow:
+
+1. Choose a unique, case-sensitive namespace before launch (e.g. `job-42-worker-a`). It is separate from the list path.
+2. Precreate with `create {list: "tasks", namespace: "job-42-worker-a"}` and `add` in the same namespace. **Or**, without precreating the destination, snapshot a global plan: `create {list: "tasks", namespace: "job-42-worker-a", from: "feature/tasks", from_namespace: "global"}`. Copies require a new destination, are atomic and independent — not a sync.
+3. Launch a native background subagent with `options.extensionBindings: {"pi-todo/1":{"namespace":"job-42-worker-a"}}`. pi-subagents delivers this through `PI_SUBAGENT_EXTENSION_BINDINGS`. pi-todo must be loaded (ambient or explicit extension path); include `todo` in a restrictive tool allowlist. Keep the same `PI_TODO_DB`.
+4. Read with `show {list: "tasks", namespace: "job-42-worker-a"}`. Discover with `lists {namespace: "*"}` or `/todo --namespace *`; browse with `/todo --namespace job-42-worker-a [path]`. Default `lists`/`next` stay global and exclude children.
+
+Child session: every todo call defaults to its namespace. `namespace: "global"` reaches ordinary shared root/scoped lists and permits all mutations of existing ones, including metadata, `purge` and `delete_list`; new global lists, siblings, and `*` are refused. Retained subagent resume replays the original binding — do not rebind. Nested subagent launches need an explicit binding to opt in.
+
+V1 targets native background children. External CLI adapters, standalone session resume, and foreground reload are unsupported. Isolation is API-level, not an OS sandbox; shell-spawned processes may inherit the binding environment.
+
 ### Viewer
 
-- `/todo` — browse all lists (Enter to drill in, Esc/Backspace to go back)
+- `/todo` — browse the caller's default namespace (Enter to drill in, Esc/Backspace to go back)
 - `/todo path` — view a specific list
 - `/todo path#id` — view a subtree
+- `/todo --namespace <name>` — browse a child/parent-chosen namespace (only a leading flag; other text stays a legacy path)
+- `/todo --namespace "*"` — parent-only: every namespace, labelled
 - `↑/↓` navigate, `s` sort (creation/completion/priority), `d` toggle descriptions, `b` back from subtree
