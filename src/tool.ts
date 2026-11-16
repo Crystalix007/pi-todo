@@ -12,7 +12,7 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type, type TUnsafe } from "typebox";
 
 import type {
 	Counts,
@@ -83,15 +83,28 @@ export interface TodoParamsInput {
 	status_filter?: Status;
 }
 
-const StatusEnum = StringEnum(STATUSES, {
-	description: "Task status: pending, in_progress, done.",
-});
+/**
+ * StringEnum emits pi-schema's `Schema<T>`, which TypeBox cannot recognize as a
+ * schema: Optional() fields then lose their optionality and enums widen to
+ * unknown in the inferred parameter type. Re-tag the SAME runtime value (a plain
+ * `{ type: "string", enum }` JSON schema every provider accepts) as TypeBox's
+ * TUnsafe so the schema-derived argument type matches TodoParamsInput.
+ */
+function stringEnum<const T extends readonly string[]>(
+	values: T,
+	description: string,
+): TUnsafe<T[number]> {
+	// SAFETY: StringEnum's pi-schema `Schema<T>` is structurally the plain JSON
+	// schema `{ type: "string", enum }` (its `~unsafe` brand is compile-time
+	// only), so re-tagging it changes the static type, not the runtime value.
+	return StringEnum(values, { description }) as unknown as TUnsafe<T[number]>;
+}
 
-const PriorityEnum = StringEnum(
+const StatusEnum = stringEnum(STATUSES, "Task status: pending, in_progress, done.");
+
+const PriorityEnum = stringEnum(
 	["critical", "high", "medium", "low"] as const,
-	{
-		description: "Task priority: critical, high, medium (default), low.",
-	},
+	"Task priority: critical, high, medium (default), low.",
 );
 
 const TaskItem = Type.Object({
@@ -128,10 +141,10 @@ const TaskItem = Type.Object({
 });
 
 export const TodoToolParams = Type.Object({
-	action: StringEnum(ACTIONS, {
-		description:
-			"Operation. lists=show all lists; show=view tasks; create=make/ensure a list; add=create task(s); update=edit/check a task; move=reparent/reorder; delete=remove a task; delete_list=remove a list; purge=remove fully-completed branches.",
-	}),
+	action: stringEnum(
+		ACTIONS,
+		"Operation. lists=show all lists; show=view tasks; create=make/ensure a list; add=create task(s); update=edit/check a task; move=reparent/reorder; delete=remove a task; delete_list=remove a list; purge=remove fully-completed branches.",
+	),
 	list: Type.Optional(
 		Type.String({
 			description:
@@ -181,15 +194,16 @@ export const TodoToolParams = Type.Object({
 		}),
 	),
 	status: Type.Optional(
-		StringEnum(STATUSES, {
-			description:
-				"(next) Status to search for; (update) New status: pending, in_progress, done.",
-		}),
+		stringEnum(
+			STATUSES,
+			"(next) Status to search for; (update) New status: pending, in_progress, done.",
+		),
 	),
 	priority: Type.Optional(
-		StringEnum(["critical", "high", "medium", "low"] as const, {
-			description: "(update) New priority: critical, high, medium, low.",
-		}),
+		stringEnum(
+			["critical", "high", "medium", "low"] as const,
+			"(update) New priority: critical, high, medium, low.",
+		),
 	),
 	tags: Type.Optional(
 		Type.Array(Type.String(), {
@@ -215,14 +229,10 @@ export const TodoToolParams = Type.Object({
 		}),
 	),
 	format: Type.Optional(
-		StringEnum(["tree", "flat"] as const, {
-			description: "(show) 'tree' (default) or 'flat'.",
-		}),
+		stringEnum(["tree", "flat"] as const, "(show) 'tree' (default) or 'flat'."),
 	),
 	status_filter: Type.Optional(
-		StringEnum(STATUSES, {
-			description: "(show) Only show tasks with this status.",
-		}),
+		stringEnum(STATUSES, "(show) Only show tasks with this status."),
 	),
 });
 
