@@ -8,6 +8,7 @@
 
 import type { Counts, ListSummary, Priority, Status, TaskNode } from "./db.ts";
 import { PRIORITY_ORDER } from "./db.ts";
+import { GLOBAL_NAMESPACE } from "./namespace.ts";
 
 export const DEFAULT_MAX_TREE_LINES = 300;
 
@@ -49,6 +50,12 @@ export interface TreeView {
 	projectPath?: string | null;
 	/** The list's overall goal — echoed in every header (incl. subtree views). */
 	description?: string | null;
+	/**
+	 * Storage namespace the list lives in. "" is the shared global namespace and
+	 * renders nothing, so every legacy/global header stays byte-identical; a
+	 * named namespace adds an explicit `namespace: <name>` part.
+	 */
+	namespace?: string;
 }
 
 export type SortMode = "creation" | "completion" | "priority";
@@ -124,6 +131,8 @@ export function headerLine(view: TreeView): string {
 	if (rootTaskText) namePart += ` "${rootTaskText}"`;
 	if (title) namePart += `  (${title})`;
 	const parts = [namePart];
+	if (view.namespace && view.namespace !== GLOBAL_NAMESPACE)
+		parts.push(`namespace: ${sanitize(view.namespace)}`);
 	// Project context travels with every read — including subtree views — so a
 	// subagent given `list#id` still knows the project and the overall goal.
 	if (projectPath && projectPath.trim())
@@ -264,8 +273,13 @@ export function renderLists(lists: ListSummary[]): string {
 		const projPart = l.project_path
 			? `  ·  project: ${sanitize(l.project_path)}`
 			: "";
+		// Only namespaced lists are labelled; global output is unchanged.
+		const nsPart =
+			l.namespace && l.namespace !== GLOBAL_NAMESPACE
+				? `  ·  namespace: ${sanitize(l.namespace)}`
+				: "";
 		lines.push(
-			`  ${l.path}${titlePart}${projPart}  ·  ${l.counts.done}/${l.counts.total} done`,
+			`  ${l.path}${titlePart}${projPart}${nsPart}  ·  ${l.counts.done}/${l.counts.total} done`,
 		);
 	}
 	return lines.join("\n");
@@ -355,8 +369,12 @@ export function themedListsLines(
 		const proj = l.project_path
 			? `  ${theme.fg("muted", `· project: ${sanitize(l.project_path)}`)}`
 			: "";
+		const ns =
+			l.namespace && l.namespace !== GLOBAL_NAMESPACE
+				? `  ${theme.fg("muted", `· namespace: ${sanitize(l.namespace)}`)}`
+				: "";
 		out.push(
-			`  ${theme.fg("accent", l.path)}  ${theme.fg("muted", `· ${l.counts.done}/${l.counts.total} done`)}${proj}`,
+			`  ${theme.fg("accent", l.path)}  ${theme.fg("muted", `· ${l.counts.done}/${l.counts.total} done`)}${proj}${ns}`,
 		);
 	}
 	return out;
