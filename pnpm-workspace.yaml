@@ -1,0 +1,4 @@
+---
+# Pi supplies these peers; production installs must not fetch host SDKs.
+# Project config also works when pnpm ignores the installer's CLI override.
+autoInstallPeers: false

@@ -167,20 +167,4 @@ Data is stored in `~/.pi/agent/todo.db` (SQLite, WAL mode). Lists survive restar
 
 ## Development
 
-```text
-src/
-  index.ts    # extension entry: registers the todo tool + /todo command
-  binding.ts  # one-time capture of PI_SUBAGENT_EXTENSION_BINDINGS
-  namespace.ts # namespace policy (identifiers, caller, scope resolution)
-  tool.ts     # action dispatch, validation, tool description
-  db.ts       # node:sqlite wrapper: schema, migrations, tree fetch
-  paths.ts    # $scope/$name path parsing
-  render.ts   # tree → text (truncation-aware) + themed TUI output
-  command.ts  # /todo command + namespace-aware TUI viewer
-```
-
-```bash
-npm ci
-npm test
-npm run typecheck
-```
+See the [contributor setup and development notes](docs/development.md).
