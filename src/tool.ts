@@ -40,11 +40,28 @@ import {
 	DEFAULT_MAX_TREE_LINES,
 	countsOfTree,
 	headerLine,
+	renderFocus,
 	renderLists,
 	renderTree,
 	sanitize,
+	type Detail,
 	type RenderedText,
+	type TreeView,
 } from "./render.ts";
+import {
+	addReceipt,
+	copyReceipt,
+	createReceipt,
+	deleteReceipt,
+	deleteListReceipt,
+	moveReceipt,
+	purgeReceipt,
+	updateListReceipt,
+	updateTaskReceipt,
+	type CascadeEffect,
+	type ListMetaSnapshot,
+	type TaskSnapshot,
+} from "./receipt.ts";
 
 export const STATUSES = ["pending", "in_progress", "done"] as const;
 export const ACTIONS = [
@@ -97,6 +114,11 @@ export interface TodoParamsInput {
 	after?: number;
 	format?: "tree" | "flat";
 	status_filter?: Status;
+	/**
+	 * How much of the list to return. Omitted = the action's default: mutations
+	 * and `next` are `brief`, `show` is `full` (every note and description).
+	 */
+	detail?: Detail;
 }
 
 /**
@@ -268,6 +290,12 @@ export const TodoToolParams = Type.Object({
 	status_filter: Type.Optional(
 		stringEnum(STATUSES, "(show) Only show tasks with this status."),
 	),
+	detail: Type.Optional(
+		stringEnum(
+			["brief", "full"] as const,
+			"How much of the list to return. 'brief' (default for writes and 'next'): every task's line, notes/descriptions of open tasks only, completed branches collapsed to (+N done). 'full' (default for 'show'): every task with its whole note and description.",
+		),
+	),
 });
 
 function requireListPath(p: TodoParamsInput): ReturnType<typeof parseListPath> {
@@ -392,6 +420,136 @@ function ok(
 	return { content, details: { ...details, truncated: content.truncated } };
 }
 
+/** Assemble the plain-text view for a list (header metadata + change receipt). */
+function treeView(args: {
+	list: {
+		title: string | null;
+		project_path: string | null;
+		description: string | null;
+	};
+	tree: TaskNode[];
+	counts: Counts;
+	path: string;
+	namespace: string;
+	rootTaskText?: string;
+	change?: string | null;
+}): TreeView {
+	return {
+		tree: args.tree,
+		counts: args.counts,
+		path: args.path,
+		namespace: args.namespace,
+		title: args.list.title,
+		projectPath: args.list.project_path,
+		description: args.list.description,
+		rootTaskText: args.rootTaskText,
+		change: args.change ?? null,
+	};
+}
+
+/**
+ * The digest every mutation returns: brief by default, `detail:"full"` on
+ * request. `touched` tasks are the ones this call changed — kept visible even
+ * when they just became `done`.
+ */
+function renderMutation(
+	view: TreeView,
+	p: TodoParamsInput,
+	touched: readonly number[],
+): RenderedText {
+	return renderTree(view, {
+		detail: p.detail ?? "brief",
+		touched: new Set(touched),
+	});
+}
+
+/** Snapshot a task for a receipt (the DB row, without list plumbing). */
+function snapshotTask(t: {
+	id: number;
+	parent_id: number | null;
+	status: Status;
+	priority: Priority;
+	text: string;
+	note: string | null;
+	tags?: string | null;
+	description: string | null;
+}): TaskSnapshot {
+	return {
+		id: t.id,
+		parent_id: t.parent_id,
+		status: t.status,
+		priority: t.priority,
+		text: t.text,
+		note: t.note,
+		tags: t.tags ?? null,
+		description: t.description,
+	};
+}
+
+function snapshotMeta(list: {
+	title: string | null;
+	project_path: string | null;
+	description: string | null;
+}): ListMetaSnapshot {
+	return {
+		title: list.title,
+		project_path: list.project_path,
+		description: list.description,
+	};
+}
+
+function requestedMeta(
+	p: TodoParamsInput,
+): ("title" | "project_path" | "description")[] {
+	const out: ("title" | "project_path" | "description")[] = [];
+	if (p.title !== undefined) out.push("title");
+	if (p.project_path !== undefined) out.push("project_path");
+	if (p.description !== undefined) out.push("description");
+	return out;
+}
+
+function requestedFields(p: TodoParamsInput): string[] {
+	const out: string[] = [];
+	for (const f of [
+		"text",
+		"status",
+		"priority",
+		"note",
+		"tags",
+		"description",
+	] as const) {
+		if (p[f] !== undefined) out.push(f);
+	}
+	return out;
+}
+
+/** Statuses of a task and its descendants, for a real cascade count. */
+function statusMap(tree: TaskNode[], into = new Map<number, Status>()): Map<number, Status> {
+	for (const n of tree) {
+		into.set(n.id, n.status);
+		statusMap(n.children, into);
+	}
+	return into;
+}
+
+/** Descendants the cascade actually moved, plus those already at the target. */
+function cascadeEffect(
+	before: Map<number, Status>,
+	tree: TaskNode[],
+	rootId: number,
+	status: Status,
+): CascadeEffect {
+	let changed = 0;
+	let already = 0;
+	for (const [id, now] of statusMap(tree)) {
+		if (id === rootId) continue;
+		if (now !== status) continue;
+		if (before.get(id) === status) already++;
+		else changed++;
+	}
+	return { changed, already, status };
+}
+
 async function doLists(
 	db: TodoDb,
 	p: TodoParamsInput,
@@ -437,17 +595,20 @@ async function doShow(
 		return { list: l, tree: db.fetchTree(l.id), counts: db.countsFor(l.id) };
 	});
 	const content = renderTree(
-		{
+		treeView({
+			list,
 			tree,
 			counts,
 			path: showPath,
 			namespace: ns.namespace,
-			title: list.title,
-			projectPath: list.project_path,
-			description: list.description,
 			rootTaskText: ref.rootTaskId == null ? undefined : tree[0]?.text,
+		}),
+		{
+			format: p.format,
+			statusFilter: p.status_filter,
+			// `show` is the explicit read: full fidelity unless brief is asked for.
+			detail: p.detail ?? "full",
 		},
-		{ format: p.format, statusFilter: p.status_filter },
 	);
 	return ok(
 		{
@@ -485,7 +646,7 @@ async function doEnsureList(
 	target: { scope: string; name: string; path: string },
 ): Promise<ActionResult> {
 	const { scope, name, path } = target;
-	const { list, tree, counts, created } = db.txn(() => {
+	const { list, tree, counts, created, before } = db.txn(() => {
 		const existing = db.getList(scope, name, ns.namespace);
 		// Creation rights are checked inside the transaction so a concurrent
 		// delete cannot slip a shared global list in between check and insert.
@@ -503,19 +664,24 @@ async function doEnsureList(
 		return {
 			list: l,
 			created: existing == null,
+			before: existing ? snapshotMeta(existing) : null,
 			tree: db.fetchTree(l.id),
 			counts: db.countsFor(l.id),
 		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree,
-		counts,
-		path,
-		title: list.title,
-		projectPath: list.project_path,
-		description: list.description,
+	// `create` on an existing list silently applies its metadata, so the receipt
+	// reports it: a brief digest would otherwise hide the change completely.
+	const change = createReceipt({
+		created,
+		requested: requestedMeta(p),
+		before: before ?? { title: null, project_path: null, description: null },
+		after: snapshotMeta(list),
 	});
+	const content = renderMutation(
+		treeView({ list, tree, counts, path, namespace: ns.namespace, change }),
+		p,
+		[],
+	);
 	return ok(
 		{
 			action: "create",
@@ -597,15 +763,18 @@ async function doCopyList(
 			counts: db.countsFor(list.id),
 		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path: target.path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
-	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path: target.path,
+			namespace: ns.namespace,
+			change: copyReceipt(result.copied, src.path),
+		}),
+		p,
+		[],
+	);
 	return ok(
 		{
 			action: "create",
@@ -622,7 +791,7 @@ async function doCopyList(
 			affected: { created_list: true, copied: result.copied },
 		},
 		{
-			text: `copied ${result.copied} task(s) from '${src.path}' (namespace '${srcLabel}')\n\n${content.text}`,
+			text: content.text,
 			truncated: content.truncated,
 		},
 	);
@@ -660,6 +829,7 @@ async function doAdd(
 		}
 		const refToId = new Map<string, number>();
 		const addedIds: number[] = [];
+		const addedItems: { id: number; parentId: number | null }[] = [];
 		let added = 0;
 		for (const it of ordered) {
 			let parentId: number | null;
@@ -685,6 +855,7 @@ async function doAdd(
 			};
 			const newId = db.insertTask(list.id, spec);
 			addedIds.push(newId);
+			addedItems.push({ id: newId, parentId });
 			if (it.ref !== undefined) refToId.set(it.ref, newId);
 			added++;
 		}
@@ -692,25 +863,28 @@ async function doAdd(
 			list,
 			added,
 			addedIds,
+			addedItems,
 			created,
 			tree: db.fetchTree(list.id),
 			counts: db.countsFor(list.id),
 		};
 	});
 
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
-	});
-	const addedLine =
-		result.addedIds.length > 0
-			? `added ${result.added} task(s): #${result.addedIds.join(", #")}`
-			: null;
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change: addReceipt({
+				added: result.addedItems,
+				createdList: result.created,
+			}),
+		}),
+		p,
+		result.addedIds,
+	);
 	return ok(
 		{
 			action: "add",
@@ -721,10 +895,7 @@ async function doAdd(
 			affected: { added: result.added, created_list: result.created },
 			added_items: result.addedIds,
 		},
-		{
-			text: addedLine ? `${addedLine}\n\n${content.text}` : content.text,
-			truncated: content.truncated,
-		},
+		content,
 	);
 }
 
@@ -774,18 +945,53 @@ async function doUpdate(
 			throw new Error(
 				`List '${path}' not found. Use action 'lists' to see available lists.`,
 			);
-		db.updateTask(list.id, p.id as number, spec);
-		return { list, tree: db.fetchTree(list.id), counts: db.countsFor(list.id) };
+		const id = p.id as number;
+		const before = snapshotTask(db.getTaskInList(list.id, id));
+		// A cascade writes every descendant; the receipt must count only the ones
+		// whose status actually moved, so capture the pre-state inside the txn.
+		const cascadeBefore =
+			spec.cascade === true && spec.status !== undefined
+				? statusMap(db.fetchSubtree(list.id, id))
+				: null;
+		db.updateTask(list.id, id, spec);
+		const after = snapshotTask(db.getTaskInList(list.id, id));
+		const cascade =
+			cascadeBefore && spec.status !== undefined
+				? cascadeEffect(
+						cascadeBefore,
+						db.fetchSubtree(list.id, id),
+						id,
+						spec.status,
+					)
+				: null;
+		return {
+			list,
+			before,
+			after,
+			cascade,
+			tree: db.fetchTree(list.id),
+			counts: db.countsFor(list.id),
+		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
+	const change = updateTaskReceipt({
+		requested: requestedFields(p),
+		before: result.before,
+		after: result.after,
+		cascade: result.cascade,
+		cascadeIgnored: p.cascade === true && p.status === undefined,
 	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change,
+		}),
+		p,
+		[p.id as number],
+	);
 	return ok(
 		{
 			action: "update",
@@ -794,6 +1000,7 @@ async function doUpdate(
 			tree: result.tree,
 			counts: result.counts,
 			affected: { updated: 1 },
+			changed: result.before,
 		},
 		content,
 	);
@@ -823,6 +1030,7 @@ async function doUpdateListMeta(
 			throw new Error(
 				`List '${path}' not found. Use action 'lists' to see available lists.`,
 			);
+		const before = snapshotMeta(list);
 		db.setListMeta(list.id, {
 			title: p.title,
 			project_path: p.project_path,
@@ -830,20 +1038,29 @@ async function doUpdateListMeta(
 		});
 		const updated = db.getList(scope, name, ns.namespace) ?? list;
 		return {
+			before,
 			list: updated,
 			tree: db.fetchTree(list.id),
 			counts: db.countsFor(list.id),
 		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
+	const change = updateListReceipt({
+		requested: requestedMeta(p),
+		before: result.before,
+		after: snapshotMeta(result.list),
 	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change,
+		}),
+		p,
+		[],
+	);
 	return ok(
 		{
 			action: "update",
@@ -875,18 +1092,49 @@ async function doMove(
 			throw new Error(
 				`List '${path}' not found. Use action 'lists' to see available lists.`,
 			);
-		db.moveTask(list.id, p.id as number, spec);
-		return { list, tree: db.fetchTree(list.id), counts: db.countsFor(list.id) };
+		const id = p.id as number;
+		const before = snapshotTask(db.getTaskInList(list.id, id));
+		db.moveTask(list.id, id, spec);
+		const after = snapshotTask(db.getTaskInList(list.id, id));
+		// Where did it really land? A non-sibling `after` is silently appended, so
+		// only the destination group's real order can answer this.
+		const group =
+			after.parent_id == null
+				? db.fetchTree(list.id)
+				: (db.fetchSubtree(list.id, after.parent_id)[0]?.children ?? []);
+		const order = group.map((n) => n.id);
+		const at = order.indexOf(id);
+		return {
+			list,
+			before,
+			after,
+			placedAfter: at > 0 ? (order[at - 1] ?? null) : null,
+			tree: db.fetchTree(list.id),
+			counts: db.countsFor(list.id),
+		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
+	const requestedAfter = p.after ?? null;
+	const change = moveReceipt({
+		id: p.id as number,
+		fromParent: result.before.parent_id,
+		toParent: result.after.parent_id,
+		placedAfter: result.placedAfter,
+		requestedAfter,
+		appendedInstead:
+			requestedAfter != null && result.placedAfter !== requestedAfter,
 	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change,
+		}),
+		p,
+		[p.id as number],
+	);
 	return ok(
 		{
 			action: "move",
@@ -914,24 +1162,37 @@ async function doDelete(
 			throw new Error(
 				`List '${path}' not found. Use action 'lists' to see available lists.`,
 			);
-		const before = db.countsFor(list.id);
-		db.deleteTask(list.id, p.id as number);
+		const id = p.id as number;
+		db.getTaskInList(list.id, id); // throws if missing / wrong list
+		// Brief output can never show the removed rows again, so the receipt must
+		// carry how many of them were still open.
+		const removedTree = db.fetchSubtree(list.id, id);
+		const removed = countsOfTree(removedTree);
+		db.deleteTask(list.id, id);
 		return {
 			list,
-			before,
+			removed: removed.total,
+			openRemoved: removed.pending + removed.in_progress,
 			tree: db.fetchTree(list.id),
 			counts: db.countsFor(list.id),
 		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
-	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change: deleteReceipt({
+				id: p.id as number,
+				removed: result.removed,
+				openRemoved: result.openRemoved,
+			}),
+		}),
+		p,
+		[],
+	);
 	return ok(
 		{
 			action: "delete",
@@ -939,7 +1200,7 @@ async function doDelete(
 			list: listRef(result.list),
 			tree: result.tree,
 			counts: result.counts,
-			affected: { deleted: result.before.total - result.counts.total },
+			affected: { deleted: result.removed },
 		},
 		content,
 	);
@@ -969,7 +1230,7 @@ async function doDeleteList(
 			affected: { deleted: deleted.total },
 		},
 		{
-			text: `Deleted list '${path}'${namespaceContext(ns.namespace)} and ${deleted.total} task(s).`,
+			text: deleteListReceipt(path, deleted.total, ns.namespace),
 			truncated: false,
 		},
 	);
@@ -995,15 +1256,18 @@ async function doPurge(
 			counts: db.countsFor(list.id),
 		};
 	});
-	const content = renderTree({
-		namespace: ns.namespace,
-		tree: result.tree,
-		counts: result.counts,
-		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
-	});
+	const content = renderMutation(
+		treeView({
+			list: result.list,
+			tree: result.tree,
+			counts: result.counts,
+			path,
+			namespace: ns.namespace,
+			change: purgeReceipt(result.removed),
+		}),
+		p,
+		[],
+	);
 	return ok(
 		{
 			action: "purge",
@@ -1051,25 +1315,20 @@ async function doNext(
 				path: ref.path,
 			};
 		});
-		const treeText = renderTree({
-			namespace: ns.namespace,
+		const view = treeView({
+			list: result.list,
 			tree: result.tree,
 			counts: result.counts,
 			path: result.path,
-			title: result.list.title,
-			projectPath: result.list.project_path,
-			description: result.list.description,
+			namespace: ns.namespace,
 			rootTaskText:
 				ref.rootTaskId == null ? undefined : result.tree[0]?.text,
 		});
 		const content = result.task
-			? {
-					text: `next → #${result.task.id} ${sanitize(result.task.text)}\n\n${treeText.text}`,
-					truncated: treeText.truncated,
-				}
+			? pickContent(view, result.task.id, result.task.text, p.detail)
 			: {
-					text: `No '${wantedStatus}' tasks found in '${result.path}'. Try a different status or add tasks first.\n\n${treeText.text}`,
-					truncated: treeText.truncated,
+					text: `No '${wantedStatus}' tasks found in '${result.path}'. Try a different status or add tasks first.\n\n${renderBriefText(view, p.detail)}`,
+					truncated: false,
 				};
 		return ok(
 			{
@@ -1113,14 +1372,12 @@ async function doNext(
 	const path = result.list.scope
 		? `${result.list.scope}/${result.list.name}`
 		: result.list.name;
-	const treeText = renderTree({
-		namespace: ns.namespace,
+	const view = treeView({
+		list: result.list,
 		tree: result.tree,
 		counts: result.counts,
 		path,
-		title: result.list.title,
-		projectPath: result.list.project_path,
-		description: result.list.description,
+		namespace: ns.namespace,
 	});
 	return ok(
 		{
@@ -1131,11 +1388,36 @@ async function doNext(
 			counts: result.counts,
 			next_task: nextTaskDetails(result.task),
 		},
-		{
-			text: `next → #${result.task.id} ${sanitize(result.task.text)}\n\n${treeText.text}`,
-			truncated: treeText.truncated,
-		},
+		pickContent(view, result.task.id, result.task.text, p.detail),
 	);
+}
+
+/**
+ * `next` content: the pick plus a focus window — the task's own detail, its
+ * ancestor chain, its siblings and its open children. `detail:"full"` keeps the
+ * old whole-tree read available.
+ */
+function pickContent(
+	view: TreeView,
+	id: number,
+	text: string,
+	detail: Detail | undefined,
+): RenderedText {
+	const pick = `next → #${id} ${sanitize(text)}`;
+	if (detail === "full") {
+		const full = renderTree(view, { detail: "full" });
+		const [header, ...rest] = full.text.split("\n");
+		return {
+			text: [header, pick, "", ...rest].join("\n"),
+			truncated: full.truncated,
+		};
+	}
+	return renderFocus(view, id);
+}
+
+/** Brief (default) or full rendering, for the no-pick fallback text. */
+function renderBriefText(view: TreeView, detail: Detail | undefined): string {
+	return renderTree(view, { detail: detail ?? "brief" }).text;
 }
 
 /** The single task `next` selected — also included as a `next → #id` line in content. */
@@ -1146,6 +1428,7 @@ function nextTaskDetails(task: {
 	priority: Priority;
 	note: string | null;
 	tags: string | null;
+	description?: string | null;
 }): {
 	id: number;
 	text: string;
@@ -1153,6 +1436,7 @@ function nextTaskDetails(task: {
 	priority: Priority;
 	note: string | null;
 	tags: string[] | undefined;
+	description: string | undefined;
 } {
 	return {
 		id: task.id,
@@ -1161,6 +1445,7 @@ function nextTaskDetails(task: {
 		priority: task.priority,
 		note: task.note,
 		tags: task.tags ? task.tags.split(",").filter(Boolean) : undefined,
+		description: task.description ?? undefined,
 	};
 }
 
@@ -1261,7 +1546,7 @@ export function buildTodoToolDef(deps: TodoToolDeps) {
 function buildGuidelines(caller: TodoCaller): string[] {
 	const guidelines = [
 		"Use the todo tool for planning tasks; create/update tasks via todo rather than writing plan files to disk.",
-		"After mutating with todo, the returned tree shows the current state — no need to call todo show again.",
+		"After a todo write you get a 'changed:' receipt plus a brief view — every task's line, notes and descriptions of OPEN tasks, completed branches collapsed to (+N done) — so you can keep working without calling show. Call show with detail:'full' only when you need completed tasks' notes (e.g. to write a summary).",
 		"Author a whole nested plan in one todo add call using items[] with ref/underRef (e.g. [{ref:'p',text:'Parent'},{text:'Child',underRef:'p'}]).",
 		"Pull the next task with the 'next' action, then mark it in_progress with update (next is read-only and returns next_task:null when the queue is empty).",
 		"Scope a subagent's work with a subtree ref: list 'scope/name#id' limits show/next to that task's descendants. Set project_path and description (the goal) when creating a list — subtree views echo them so scoped subagents keep the project context.",
@@ -1292,7 +1577,7 @@ function buildDescription(caller: TodoCaller): string {
 		"",
 		"ACTIONS (the 'action' field selects one; relevant fields shown):",
 		"- lists: list TODO lists in your default namespace. Optional 'scope' filters by scope name or segment prefix; optional 'namespace' selects another namespace ('global', a namespace the parent assigned, or '*' to see all of them).",
-		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter'.",
+		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter', 'detail' ('full' = default: every task with its whole note and description; 'brief' = open tasks with their notes, completed branches collapsed).",
 		"- create {list} [title] [project_path] [description]: create/ensure a list exists. title = human label; project_path = project directory the work belongs to; description = the overall goal. All three are echoed in every read of the list (including subtree views). With 'from' it instead COPIES that whole existing source list (add 'from_namespace' when the source lives in another namespace, e.g. 'global') into the new destination list: independent copy, fresh task ids, same tree order and task fields, source untouched, and an existing destination is refused. When copying, title/project_path/description override the copied values ('' clears one).",
 		"- add {list, items[, under]}: add task(s). 'items' is an array; each may have 'priority' (critical|high|medium|low, default medium). Nest via ref/underRef. 'under'=existing task id in THIS list to attach top-level items under.",
 		"- update {list, id, text|note|status|priority|tags|description[, cascade]}: edit a task. Pass '' to clear note/description, [] to clear tags. WITHOUT 'id': updates the list itself instead — title, project_path, description ('' clears a field).",
@@ -1300,10 +1585,10 @@ function buildDescription(caller: TodoCaller): string {
 		"- delete {list, id}: remove a task and its whole subtree (reports how many tasks were removed).",
 		"- delete_list {list}: remove an entire list and all its tasks.",
 		"- purge {list}: remove completed work — deletes any task that is 'done' with no pending descendants (done leaves included). Pending tasks are never deleted.",
-		"- next {list?}: get the highest-priority pending task. If 'list' is given, search within it; otherwise search the lists of the resolved namespace. Optional 'status' to look for e.g. 'in_progress' instead. 'next' is read-only: it does NOT mark the task in_progress — call update with status:'in_progress' when you start work. Returns next_task:null when nothing matches (not an error).",
+		"- next {list?}: get the highest-priority pending task plus a focus window (the task's note/description, its ancestor chain, nearby siblings, its open children). If 'list' is given, search within it; otherwise search the lists of the resolved namespace. Optional 'status' to look for e.g. 'in_progress' instead; 'detail:\"full\"' returns the whole tree instead of the window. 'next' is read-only: it does NOT mark the task in_progress — call update with status:'in_progress' when you start work. Returns next_task:null when nothing matches (not an error).",
 		"",
 		"STATUS is one of: pending, in_progress, done.",
-		"Every write returns the affected list's current tree + counts, so you needn't call 'show' afterward. Task ids appear as '#<id>' in the tree.",
+		"Every write returns a 'changed:' receipt (what really happened, from the post-transaction state: `added 2 tasks: #13 under #7`, `#12 status pending → done`, `note cleared (was 142 chars)`, `moved #3 → #7`, `deleted #9 (+4 subtasks, 2 open)`) plus a brief digest of the whole list. Completed branches collapse to `(+N done)`, and the trailer names anything else omitted. Nothing you need to keep working is dropped silently; task ids appear as '#<id>'.",
 		"On errors the tool reports them; use 'show' or 'lists' to discover valid ids/paths.",
 	].join("\n");
 }

@@ -26,7 +26,7 @@ View it yourself:
 /todo my-project/tasks
 ```
 
-Every write (`add`, `update`, `move`, `delete`, `purge`) returns the affected list's tree, so the agent never needs a follow-up `show`.
+Every write returns a **change receipt** plus a **brief digest** of the list, so the agent never needs a follow-up `show` to know where it stands. The digest keeps the whole structure (every task's id and line) and inlines the notes and descriptions of *open* tasks, but collapses completed branches to `(+N done)` and never re-echoes the detail of work already finished:
 
 ## How it works
 
@@ -37,8 +37,20 @@ Every write (`add`, `update`, `move`, `delete`, `purge`) returns the affected li
 **List metadata.** A list can carry a `title`, a `project_path` (the directory the work belongs to), and a `description` (the overall goal). Set them in `create`, or later with `update` without an `id`. Every read prints them in the header, subtree views included, so a subagent scoped to `list#id` still knows the project and the goal:
 
 ```text
-my-app/sprint  (Sprint 24)  ·  project: /Users/me/code/my-app  ·  goal: Ship v2 of the billing flow before the 15th  ·  0/3 done
+feature/auth  (Auth)  ·  project: /repo  ·  goal: Ship login by Friday  ·  4/7 done  ·  1 in progress
+changed: #4 status pending → done; cascade 2 subtasks → done
+[~] #1 Build login  [!]
+  · Constraint: reuse the shared form component, no new deps.
+  [x] #2 HTML form
+  [ ] #3 POST handler
+[x] #4 DB schema  (+2 done)
+[ ] #5 Docs
+… 2 done task(s) collapsed. show 'feature/auth', detail:"full" for everything.
 ```
+
+Receipts describe the real post-transaction outcome, not the request: a same-value write reports `no change`, a `cascade` counts only descendants whose status actually moved, a `move` reports where the task really landed, and a clear names what was destroyed (`note cleared (was 142 chars)`). Measured over the operator's real database, this keeps a typical write at a few hundred bytes instead of 9–18 KB, and the digest fits inside the 2 000-character window pi keeps per tool result when it compacts a session.
+
+`show` is the explicit read and returns full fidelity by default: every task with its whole note and description. Pass `detail: "brief"` for the digest instead.
 
 **Subtree refs.** Append `#<task-id>` to a list path (`feature/auth#7`) to scope `show`/`next` to that task and its descendants. This is the standard way to hand a subagent a bounded slice of a plan.
 
@@ -105,7 +117,7 @@ Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does n
 | Action | Purpose | Key fields |
 | ------ | ------- | ---------- |
 | `lists` | List all lists | `scope` (prefix filter), `namespace` (`global`\|`*`\|name) |
-| `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter` |
+| `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter`, `detail` |
 | `create` | Create a list (or copy one) | `list`, `title`, `project_path`, `description`, `from`, `from_namespace` |
 | `add` | Add task(s) | `list`, `items[]`, `under` |
 | `update` | Edit a task, or list metadata | `list` + `id`, or `list` only |
@@ -113,15 +125,16 @@ Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does n
 | `delete` | Remove a task and its subtree | `list`, `id` |
 | `delete_list` | Remove a whole list | `list` |
 | `purge` | Remove fully-done branches | `list` |
-| `next` | Highest-priority pending task | `list` (optional), `status` |
+| `next` | Highest-priority pending task | `list` (optional), `status`, `detail` |
 
 Field semantics:
 
 - Every action accepts `namespace` (`global`, a parent-assigned name, or `*` for parent discovery on `lists`). Omit it for the session's default: global when unbound, the bound namespace for a child. It is separate from the list path — never a path prefix.
+- `detail` selects how much of the list comes back. Writes and `next` default to `brief`; `show` defaults to `full`. Brief mode keeps every task's line and id, inlines the detail of open tasks, collapses completed branches, and word-caps `project`/`goal` in the header (full mode keeps all of it).
 - `update` with an `id` edits the task: `text`, `note`, `status`, `priority`, `tags`, `description`. `cascade` pushes a status change to all descendants. `''` clears `note`/`description`, `[]` clears `tags`.
 - `update` without an `id` edits the list: `title`, `project_path`, `description`. `''` clears a field.
 - `add` nests via `ref`/`underRef` (below) and attaches under an existing task with `under`.
-- `next` is read-only. It returns `next_task: null` when nothing matches (not an error) and never changes a task's status; mark it `in_progress` after picking it up.
+- `next` is read-only. It returns `next_task: null` when nothing matches (not an error) and never changes a task's status; mark it `in_progress` after picking it up. Its response is a **focus window**: the picked task with its full note/description, its ancestor chain, nearby siblings and its open children — pass `detail: "full"` for the whole tree instead.
 - `purge` deletes only `done` branches with no pending descendants.
 
 ## Nested authoring in one call

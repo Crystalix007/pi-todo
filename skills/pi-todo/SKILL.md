@@ -19,9 +19,15 @@ items: [{ref:"p", text:"Ship feature"}, {text:"Write tests", underRef:"p"}]
 
 Each item gets a `ref` (label, unique in this batch) and optionally an `underRef` pointing to another item's `ref`. The tool resolves refs → real parent IDs.
 
-### Mutations return the tree
+### Mutations return a change receipt + a brief digest
 
-After `add`, `update`, `move`, `delete`, `purge` — the response includes the full updated tree and counts. Do **not** follow up with `show`.
+After `add`, `update`, `move`, `delete`, `purge` the response is:
+
+1. a `changed:` line describing what really happened (`#12 status pending → done`, `note cleared (was 142 chars)`, `moved #3 → #7`, `deleted #9 (+4 subtasks, 2 open)`) — or `no change:` when the write was a no-op;
+2. a **brief** view of the whole list: every task's line and id, with notes/descriptions of **open** tasks inline, and completed branches collapsed to `(+N done)`;
+3. a trailer naming anything else omitted and how to expand it.
+
+So you can normally keep working without another read. Call `show` with `detail: "full"` when you need the notes of **completed** tasks (for a summary or report) or the whole history.
 
 ### Priority
 

@@ -18,7 +18,8 @@ src/
   tool.ts      # action dispatch, validation, tool description
   db.ts        # node:sqlite wrapper: schema, migrations, tree fetch
   paths.ts     # $scope/$name path parsing
-  render.ts    # tree → text (truncation-aware) + themed TUI output
+  render.ts    # tree → text: full render, brief digest, focus window, themed TUI output
+  receipt.ts   # change-receipt grammar (what a write really did, from before/after state)
   command.ts   # /todo command + namespace-aware TUI viewer
 ```
 

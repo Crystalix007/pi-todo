@@ -55,8 +55,13 @@ test("add returns added ids, flags created_list, and prefixes content", async ()
 	assert.equal(r.details.affected.created_list, true);
 	const ids = r.details.added_items as number[];
 	assert.equal(ids.length, 2);
-	assert.match(r.content.text, /^added 2 task\(s\): #\d+, #\d+/);
-	// ids are referenced in the returned tree
+	// The receipt lists the new ids in order and names the auto-created list; the
+	// digest below shows where each one landed.
+	assert.match(
+		r.content.text,
+		/^changed: added 2 tasks: #\d+, #\d+; new list$/m,
+	);
+	// ids are referenced in the returned digest
 	for (const id of ids) assert.match(r.content.text, new RegExp(`#${id} `));
 });
 
@@ -106,7 +111,7 @@ test("next within a list picks a task, marks it in content, and does not change 
 	const r = await dispatchTodo(db, { action: "next", list: "usability/t4" });
 	const picked = r.details.next_task as { id: number; text: string };
 	assert.equal(picked.text, "top-pick");
-	assert.match(r.content.text, new RegExp(`^next → #${picked.id} top-pick`));
+	assert.match(r.content.text, new RegExp(`^next → #${picked.id} top-pick`, "m"));
 	// read-only: still pending afterwards
 	const after1 = await dispatchTodo(db, {
 		action: "show",

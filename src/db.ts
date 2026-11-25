@@ -899,6 +899,7 @@ export class TodoDb {
 		status: Status;
 		priority: Priority;
 		note: string | null;
+		tags: string | null;
 		description: string | null;
 	} {
 		const row = this.stmts.getTask.get(id) as
@@ -911,6 +912,7 @@ export class TodoDb {
 					status: Status;
 					priority: Priority;
 					note: string | null;
+					tags: string | null;
 					description: string | null;
 			  }
 			| undefined;
