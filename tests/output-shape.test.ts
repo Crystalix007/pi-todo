@@ -9,7 +9,7 @@
  *  - `next` returns a focus window and `next detail:"full"` the whole tree;
  *  - `details.tree` keeps the whole tree regardless of the text shape, so the
  *    TUI and any programmatic consumer lose nothing;
- *  - routine collapsing never sets `truncated`.
+ *  - routine collapsing never sets `elided`.
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -65,9 +65,9 @@ test("a mutation returns a receipt plus a brief digest, not the whole history", 
 	// the completed branch is collapsed, with its size
 	assert.match(text, /\[x\] #4 DB schema  \(\+1 done\)/);
 	assert.doesNotMatch(text, /#5 Indexes/);
-	// routine collapse is not truncation
-	assert.equal(r.content.truncated, false);
-	assert.equal(r.details.truncated, false);
+	// routine collapse is not elision
+	assert.equal(r.content.elided, false);
+	assert.equal(r.details.elided, false);
 	// and the machine-readable payload still has everything
 	const tree = r.details.tree as { id: number; children: unknown[] }[];
 	assert.equal(tree.length, 3);

@@ -48,7 +48,7 @@ changed: #4 status pending → done; cascade 2 subtasks → done
 … 2 done task(s) collapsed. show 'feature/auth', detail:"full" for everything.
 ```
 
-Receipts describe the real post-transaction outcome, not the request: a same-value write reports `no change`, a `cascade` counts only descendants whose status actually moved, a `move` reports where the task really landed, and a clear names what was destroyed (`note cleared (was 142 chars)`). Measured over the operator's real database, this keeps a typical write at a few hundred bytes instead of 9–18 KB, and the digest fits inside the 2 000-character window pi keeps per tool result when it compacts a session.
+Receipts describe the real post-transaction outcome, not the request: a same-value write reports `no change`, a `cascade` counts only descendants whose status actually moved, a `move` reports where the task really landed, and a clear names what was destroyed (`note cleared (was 142 chars)`). The trailer names whatever else was left out, and the tool-result `elided` flag is set only when task rows were actually dropped — routine collapsing does not set it. Measured over the operator's real database, this keeps a typical write at a few hundred bytes instead of 9–18 KB, and the digest fits inside the 2 000-character window pi keeps per tool result when it compacts a session.
 
 `show` is the explicit read and returns full fidelity by default: every task with its whole note and description. Pass `detail: "brief"` for the digest instead.
 
@@ -118,7 +118,7 @@ Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does n
 | ------ | ------- | ---------- |
 | `lists` | List all lists | `scope` (prefix filter), `namespace` (`global`\|`*`\|name) |
 | `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter`, `detail` |
-| `create` | Create a list (or copy one) | `list`, `title`, `project_path`, `description`, `from`, `from_namespace` |
+| `create` | Create a list (or copy one) | `list`, `title`, `project_path`, `description`, `from`, `from_namespace`, `force` |
 | `add` | Add task(s) | `list`, `items[]`, `under` |
 | `update` | Edit a task, or list metadata | `list` + `id`, or `list` only |
 | `move` | Reparent / reorder a task | `list`, `id`, `under`, `after` |
@@ -133,6 +133,7 @@ Field semantics:
 - `detail` selects how much of the list comes back. Writes and `next` default to `brief`; `show` defaults to `full`. Brief mode keeps every task's line and id, inlines the detail of open tasks, collapses completed branches, and word-caps `project`/`goal` in the header (full mode keeps all of it).
 - `update` with an `id` edits the task: `text`, `note`, `status`, `priority`, `tags`, `description`. `cascade` pushes a status change to all descendants. `''` clears `note`/`description`, `[]` clears `tags`.
 - `update` without an `id` edits the list: `title`, `project_path`, `description`. `''` clears a field.
+- `create` is idempotent, but it will not quietly rewrite a list. Applying a different non-empty `title`/`project_path`/`description` to a list that already has one is refused; repeat the call with `force: true` to confirm the overwrite (or use `update` without an `id` to change metadata deliberately). Filling a field that is currently empty never needs `force`.
 - `add` nests via `ref`/`underRef` (below) and attaches under an existing task with `under`.
 - `next` is read-only. It returns `next_task: null` when nothing matches (not an error) and never changes a task's status; mark it `in_progress` after picking it up. Its response is a **focus window**: the picked task with its full note/description, its ancestor chain, nearby siblings and its open children — pass `detail: "full"` for the whole tree instead.
 - `purge` deletes only `done` branches with no pending descendants.

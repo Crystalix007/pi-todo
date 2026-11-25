@@ -115,6 +115,11 @@ export interface TodoParamsInput {
 	format?: "tree" | "flat";
 	status_filter?: Status;
 	/**
+	 * (create) Overwrite non-empty metadata on a list that already exists.
+	 * Without it, `create` refuses when it would replace a set title/goal/project.
+	 */
+	force?: boolean;
+	/**
 	 * How much of the list to return. Omitted = the action's default: mutations
 	 * and `next` are `brief`, `show` is `full` (every note and description).
 	 */
@@ -287,6 +292,12 @@ export const TodoToolParams = Type.Object({
 	format: Type.Optional(
 		stringEnum(["tree", "flat"] as const, "(show) 'tree' (default) or 'flat'."),
 	),
+	force: Type.Optional(
+		Type.Boolean({
+			description:
+				"(create) Overwrite non-empty title/project_path/description on a list that already exists. Without it 'create' refuses rather than silently replacing existing metadata — re-run with force:true to confirm.",
+		}),
+	),
 	status_filter: Type.Optional(
 		stringEnum(STATUSES, "(show) Only show tasks with this status."),
 	),
@@ -417,7 +428,7 @@ function ok(
 	details: Record<string, unknown>,
 	content: RenderedText,
 ): ActionResult {
-	return { content, details: { ...details, truncated: content.truncated } };
+	return { content, details: { ...details, elided: content.elided } };
 }
 
 /** Assemble the plain-text view for a list (header metadata + change receipt). */
@@ -508,6 +519,37 @@ function requestedMeta(
 	return out;
 }
 
+/**
+ * Metadata fields a `create` would CLOBBER: the caller supplied a different
+ * non-empty value and the existing list already has one. Setting an empty field
+ * is harmless and does not count.
+ */
+function overwriteConflicts(
+	existing: {
+		title: string | null;
+		project_path: string | null;
+		description: string | null;
+	},
+	p: TodoParamsInput,
+): string[] {
+	const out: string[] = [];
+	const check = (
+		field: "title" | "project_path" | "description",
+		label: string,
+		incoming: string | undefined,
+	): void => {
+		if (incoming === undefined) return;
+		const next = incoming.trim();
+		const current = (existing[field] ?? "").trim();
+		if (!next || !current || next === current) return;
+		out.push(label);
+	};
+	check("title", "title", p.title);
+	check("project_path", "project", p.project_path);
+	check("description", "goal", p.description);
+	return out;
+}
+
 function requestedFields(p: TodoParamsInput): string[] {
 	const out: string[] = [];
 	for (const f of [
@@ -566,7 +608,7 @@ async function doLists(
 		namespace: ns.allNamespaces ? ALL_NAMESPACES : namespaceLabel(ns.namespace),
 		lists: lists.map(listSummaryToDetails),
 	};
-	return ok(details, { text, truncated: false });
+	return ok(details, { text, elided: false });
 }
 
 async function doShow(
@@ -651,6 +693,20 @@ async function doEnsureList(
 		// Creation rights are checked inside the transaction so a concurrent
 		// delete cannot slip a shared global list in between check and insert.
 		if (!existing) assertCanCreateList(ns.caller, ns.namespace, path);
+		// `create` on an existing list overwrites the metadata it is given, so a
+		// typo or a stale re-run could quietly rewrite a list's title or goal.
+		// Require an explicit repeat (`force:true`) instead.
+		if (existing) {
+			const clobbered = overwriteConflicts(existing, p);
+			if (clobbered.length > 0 && p.force !== true) {
+				const described = clobbered
+					.map((label) => `${label} (currently set)`)
+					.join(", ");
+				throw new Error(
+					`List '${path}' already exists and 'create' would overwrite its ${described}. Re-run with force:true to overwrite, or change metadata deliberately with action 'update' and no 'id'.`,
+				);
+			}
+		}
 		const l = db.ensureList(
 			scope,
 			name,
@@ -792,7 +848,7 @@ async function doCopyList(
 		},
 		{
 			text: content.text,
-			truncated: content.truncated,
+			elided: content.elided,
 		},
 	);
 }
@@ -999,7 +1055,9 @@ async function doUpdate(
 			list: listRef(result.list),
 			tree: result.tree,
 			counts: result.counts,
-			affected: { updated: 1 },
+			// The real number of tasks whose status moved: the target plus any
+			// descendant the cascade changed (it used to be a hardcoded 1).
+			affected: { updated: 1 + (result.cascade?.changed ?? 0) },
 			changed: result.before,
 		},
 		content,
@@ -1231,7 +1289,7 @@ async function doDeleteList(
 		},
 		{
 			text: deleteListReceipt(path, deleted.total, ns.namespace),
-			truncated: false,
+			elided: false,
 		},
 	);
 }
@@ -1328,7 +1386,7 @@ async function doNext(
 			? pickContent(view, result.task.id, result.task.text, p.detail)
 			: {
 					text: `No '${wantedStatus}' tasks found in '${result.path}'. Try a different status or add tasks first.\n\n${renderBriefText(view, p.detail)}`,
-					truncated: false,
+					elided: false,
 				};
 		return ok(
 			{
@@ -1365,7 +1423,7 @@ async function doNext(
 			},
 			{
 				text: `No '${wantedStatus}' tasks found in any list${namespaceContext(ns.namespace)}. Try adding tasks first.`,
-				truncated: false,
+				elided: false,
 			},
 		);
 	}
@@ -1409,7 +1467,7 @@ function pickContent(
 		const [header, ...rest] = full.text.split("\n");
 		return {
 			text: [header, pick, "", ...rest].join("\n"),
-			truncated: full.truncated,
+			elided: full.elided,
 		};
 	}
 	return renderFocus(view, id);
@@ -1578,7 +1636,7 @@ function buildDescription(caller: TodoCaller): string {
 		"ACTIONS (the 'action' field selects one; relevant fields shown):",
 		"- lists: list TODO lists in your default namespace. Optional 'scope' filters by scope name or segment prefix; optional 'namespace' selects another namespace ('global', a namespace the parent assigned, or '*' to see all of them).",
 		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter', 'detail' ('full' = default: every task with its whole note and description; 'brief' = open tasks with their notes, completed branches collapsed).",
-		"- create {list} [title] [project_path] [description]: create/ensure a list exists. title = human label; project_path = project directory the work belongs to; description = the overall goal. All three are echoed in every read of the list (including subtree views). With 'from' it instead COPIES that whole existing source list (add 'from_namespace' when the source lives in another namespace, e.g. 'global') into the new destination list: independent copy, fresh task ids, same tree order and task fields, source untouched, and an existing destination is refused. When copying, title/project_path/description override the copied values ('' clears one).",
+		"- create {list} [title] [project_path] [description]: create/ensure a list exists. title = human label; project_path = project directory the work belongs to; description = the overall goal. All three are echoed in every read of the list (including subtree views). On a list that ALREADY exists, create refuses to replace a non-empty title/project_path/description unless you pass force:true (a deliberate repeat); prefer update without an 'id' for metadata changes. With 'from' it instead COPIES that whole existing source list (add 'from_namespace' when the source lives in another namespace, e.g. 'global') into the new destination list: independent copy, fresh task ids, same tree order and task fields, source untouched, and an existing destination is refused. When copying, title/project_path/description override the copied values ('' clears one).",
 		"- add {list, items[, under]}: add task(s). 'items' is an array; each may have 'priority' (critical|high|medium|low, default medium). Nest via ref/underRef. 'under'=existing task id in THIS list to attach top-level items under.",
 		"- update {list, id, text|note|status|priority|tags|description[, cascade]}: edit a task. Pass '' to clear note/description, [] to clear tags. WITHOUT 'id': updates the list itself instead — title, project_path, description ('' clears a field).",
 		"- move {list, id[, under][, after]}: reparent/reorder. Omitting 'under' moves the task to top level; 'after'=sibling id within the destination parent (a non-sibling id is appended).",

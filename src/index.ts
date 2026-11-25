@@ -89,7 +89,7 @@ export default function (pi: ExtensionAPI): void {
 				if (ns) t += theme.fg("dim", ns);
 				const aff = formatAffected(d.affected);
 				if (aff) t += ` ${theme.fg("dim", aff)}`;
-				if (d.truncated) t += ` ${theme.fg("warning", "(truncated)")}`;
+				if (d.elided) t += ` ${theme.fg("warning", "(elided)")}`;
 				return new Text(t, 0, 0);
 			}
 

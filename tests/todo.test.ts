@@ -7,7 +7,7 @@
  *  - `next` returns a success payload (next_task:null) when the queue is empty
  *  - `next` content marks the picked task (`next → #id`)
  *  - `delete` reports the true subtree-removed count
- *  - renderTree's truncation count never goes negative
+ *  - renderTree's elision count never goes negative
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -191,7 +191,7 @@ test("next within a subtree ref picks only descendants", async () => {
 	assert.notEqual(next.details.next_task.text, "sibling");
 });
 
-test("renderTree truncation count never goes negative", () => {
+test("renderTree elision count never goes negative", () => {
 	const tree = Array.from({ length: 150 }, (_, i) => ({
 		id: i + 1,
 		text: `task ${i + 1}`,
@@ -205,9 +205,9 @@ test("renderTree truncation count never goes negative", () => {
 		{ tree, counts, path: "usability/t7", title: null },
 		{ maxLines: 60 },
 	);
-	assert.equal(out.truncated, true);
-	const m = out.text.match(/… (\d+) more task\(s\) truncated/);
-	assert.ok(m, "truncation notice present");
+	assert.equal(out.elided, true);
+	const m = out.text.match(/… (\d+) more task\(s\) omitted/);
+	assert.ok(m, "elision notice present");
 	assert.ok(Number(m[1]) >= 0, `remaining count is not negative: ${m[1]}`);
 });
 

@@ -122,7 +122,12 @@ export interface ShowOpts {
 
 export interface RenderedText {
 	text: string;
-	truncated: boolean;
+	/**
+	 * Task rows were deliberately left out to fit the budget (never routine
+	 * collapsing). Named `elided`, not `truncated`: the text is complete as
+	 * emitted, and the omission is always announced in its own trailer.
+	 */
+	elided: boolean;
 }
 
 const STATUS_ORDER: Record<Status, number> = {
@@ -423,7 +428,7 @@ export function renderBrief(view: TreeView, opts: ShowOpts = {}): RenderedText {
 	if (view.change) head.push(view.change);
 	if (view.counts.total === 0) {
 		head.push("(empty list — add tasks with action 'add')");
-		return { text: head.join("\n"), truncated: false };
+		return { text: head.join("\n"), elided: false };
 	}
 
 	// Collapse routinely. Only if the result is still too big do we drop done
@@ -487,11 +492,11 @@ export function renderBrief(view: TreeView, opts: ShowOpts = {}): RenderedText {
 	// Absolute backstop: the trailer (which must never be elided) can itself be
 	// large only in pathological cases; keep the promise honest if it happens.
 	if (Buffer.byteLength(text, "utf-8") > BRIEF_MAX_BYTES) {
-		text = `${text.slice(0, BRIEF_MAX_BYTES - 120)}\n… output truncated at ~${BRIEF_MAX_BYTES} bytes; narrow with a subtree ref ('list#id').`;
+		text = `${text.slice(0, BRIEF_MAX_BYTES - 120)}\n… output cut at ~${BRIEF_MAX_BYTES} bytes; narrow with a subtree ref ('list#id').`;
 	}
 	return {
 		text,
-		truncated: cutTasks > 0 || stats.omittedDone > 0,
+		elided: cutTasks > 0 || stats.omittedDone > 0,
 	};
 }
 
@@ -505,7 +510,7 @@ function renderFull(view: TreeView, opts: ShowOpts = {}): RenderedText {
 	if (view.change) lines.push(view.change);
 	if (view.counts.total === 0) {
 		lines.push("(empty list — add tasks with action 'add')");
-		return { text: lines.join("\n"), truncated: false };
+		return { text: lines.join("\n"), elided: false };
 	}
 
 	// A status filter always flattens (structure is lost when filtering).
@@ -513,7 +518,7 @@ function renderFull(view: TreeView, opts: ShowOpts = {}): RenderedText {
 	const display = flatten(view.tree, opts);
 
 	const budget = Math.max(5, maxLines - lines.length);
-	let truncated = false;
+	let elided = false;
 	let emitted = 0;
 	let tasksEmitted = 0;
 	for (const l of display) {
@@ -521,7 +526,7 @@ function renderFull(view: TreeView, opts: ShowOpts = {}): RenderedText {
 		let taskStarted = false;
 		for (const s of seg) {
 			if (emitted >= budget) {
-				truncated = true;
+				elided = true;
 				break;
 			}
 			lines.push(s);
@@ -531,26 +536,26 @@ function renderFull(view: TreeView, opts: ShowOpts = {}): RenderedText {
 				tasksEmitted++;
 			}
 		}
-		if (truncated) break;
+		if (elided) break;
 	}
 
-	if (truncated) {
+	if (elided) {
 		// display.length counts TASKS; emitted counts rendered LINES (a task can
 		// also render note + description lines), so the remaining-task count must
 		// be tracked separately or it can go negative.
 		const remaining = display.length - tasksEmitted;
 		lines.push(
-			`… ${remaining} more task(s) truncated. Narrow with status_filter ('pending'|'in_progress'|'done') or a subtree ref ('list#id').`,
+			`… ${remaining} more task(s) omitted. Narrow with status_filter ('pending'|'in_progress'|'done') or a subtree ref ('list#id').`,
 		);
 	}
 	let text = lines.join("\n");
 	// Byte backstop: a single oversized field (after line capping) still can't blow context.
 	// Measured in UTF-8 bytes: the glyphs above are multi-byte, so length lies.
 	if (Buffer.byteLength(text, "utf-8") > MAX_OUTPUT_BYTES) {
-		text = `${text.slice(0, MAX_OUTPUT_BYTES - 120)}\n… output truncated at ~${MAX_OUTPUT_BYTES} bytes; narrow with status_filter or a subtree ref ('list#id').`;
-		truncated = true;
+		text = `${text.slice(0, MAX_OUTPUT_BYTES - 120)}\n… output cut at ~${MAX_OUTPUT_BYTES} bytes; narrow with status_filter or a subtree ref ('list#id').`;
+		elided = true;
 	}
-	return { text, truncated };
+	return { text, elided };
 }
 
 /** Locate a task and its ancestor chain (root → task) within a fetched tree. */
@@ -679,7 +684,7 @@ export function renderFocus(
 		lines.push(
 			`… ${cutTasks > 0 ? `${cutTasks} more task(s)` : "more context"} elided; show '${view.path}#${node.id}' for the full subtree.`,
 		);
-	return { text: lines.join("\n"), truncated: cut > 0 };
+	return { text: lines.join("\n"), elided: cut > 0 };
 }
 
 /** Render the list-of-lists to plain text. */

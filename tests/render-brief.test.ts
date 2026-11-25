@@ -7,7 +7,7 @@
  *  - a done branch that still contains open work is NOT collapsed;
  *  - notes/descriptions of OPEN tasks are inline (the constraint the agent needs);
  *    detail of DONE tasks is not — it is reachable through `show detail:"full"`;
- *  - everything omitted is named in a trailer, and `truncated` is only set when
+ *  - everything omitted is named in a trailer, and `elided` is only set when
  *    something was actually dropped, never for routine collapse;
  *  - brief headers word-cap a huge goal, full headers do not.
  */
@@ -128,13 +128,13 @@ test("open tasks keep their detail inline; done tasks do not", () => {
 
 test("an over-long note is capped and the trailer says so", () => {
 	const tree = [task(1, { note: "x".repeat(900) })];
-	const { text, truncated } = renderBrief(view(tree));
+	const { text, elided } = renderBrief(view(tree));
 	assert.match(text, /note\(s\)\/description\(s\) shortened/);
 	assert.ok(text.split("\n").every((l) => l.length < 500), "no giant line");
-	assert.equal(truncated, false, "capping a note is not task loss");
+	assert.equal(elided, false, "capping a note is not task loss");
 });
 
-test("over the line budget, done rows are dropped and the render is flagged truncated", () => {
+test("over the line budget, done rows are dropped and the render is flagged elided", () => {
 	// 40 done tasks + 40 open ones: only the open ones are essential.
 	const tree = [
 		...Array.from({ length: 40 }, (_, i) =>
@@ -144,8 +144,8 @@ test("over the line budget, done rows are dropped and the render is flagged trun
 			task(100 + i, { text: `open ${i}` }),
 		),
 	];
-	const { text, truncated } = renderBrief(view(tree));
-	assert.equal(truncated, true);
+	const { text, elided } = renderBrief(view(tree));
+	assert.equal(elided, true);
 	assert.match(text, /done task\(s\) omitted for size/);
 	// every open task survives: usable open work is never dropped
 	for (let i = 0; i < 40; i++) assert.match(text, new RegExp(`#${100 + i} open ${i}`));
@@ -160,8 +160,8 @@ test("a hard cut drops whole tasks and counts them", () => {
 	const tree = Array.from({ length: 200 }, (_, i) =>
 		task(i + 1, { text: `open ${i}` }),
 	);
-	const { text, truncated } = renderBrief(view(tree));
-	assert.equal(truncated, true);
+	const { text, elided } = renderBrief(view(tree));
+	assert.equal(elided, true);
 	assert.match(text, /open task\(s\) over the size budget/);
 	assert.match(text, /Narrow with show 'team\/tasks#<id>'/);
 	assert.match(text, /#1 open 0/);
@@ -181,7 +181,7 @@ test("the change receipt sits directly under the header", () => {
 
 test("brief headers word-cap the goal; full headers and focus windows do not", () => {
 	// Under sanitize()'s 500-char line cap but over the brief goal cap, so the
-	// difference between brief and full is visible rather than both truncating.
+	// difference between brief and full is visible rather than both cutting.
 	const goal = `${"word ".repeat(70)}tail-constraint`;
 	const tree = [task(1)];
 	const brief = renderBrief(view(tree, { description: goal })).text.split("\n")[0]!;

@@ -62,7 +62,7 @@ Useful for assigning a subagent a focused subset of work.
 
 ### Lists
 
-Named `$scope/$name` (scoped) or just `$name` (root). Auto-created on first `add`.
+Named `$scope/$name` (scoped) or just `$name` (root). Auto-created on first `add`. `create` on a list that already exists refuses to replace a non-empty `title`/`project_path`/`description` unless you repeat it with `force: true`; to change metadata on purpose, use `update` without an `id`.
 
 ### Namespaces (subagent isolation)
 
