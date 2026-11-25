@@ -38,6 +38,8 @@ export default function (pi: ExtensionAPI): void {
 			if (args?.id != null) text += ` ${theme.fg("accent", `#${args.id}`)}`;
 			if (typeof args?.namespace === "string" && args.namespace)
 				text += ` ${theme.fg("muted", `namespace=${args.namespace}`)}`;
+			if (typeof args?.project === "string" && args.project)
+				text += ` ${theme.fg("muted", `project=${args.project}`)}`;
 			if (args?.items) text += ` ${theme.fg("dim", `+${args.items.length}`)}`;
 			return new Text(text, 0, 0);
 		},
@@ -48,12 +50,16 @@ export default function (pi: ExtensionAPI): void {
 			const d = result?.details ?? {};
 			const contentText = result?.content?.[0]?.text ?? "";
 
-			// lists action → compact count (namespace shown only when non-global)
+			// lists action → compact count (namespace/project filter shown when set)
 			if (Array.isArray(d.lists)) {
+				const inProject =
+					typeof d.project === "string" && d.project
+						? ` in ${d.project}`
+						: "";
 				return new Text(
 					theme.fg(
 						"muted",
-						`${d.lists.length} list(s)${namespaceSuffix(d.namespace)}`,
+						`${d.lists.length} list(s)${inProject}${namespaceSuffix(d.namespace)}`,
 					),
 					0,
 					0,

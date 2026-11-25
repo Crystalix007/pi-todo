@@ -116,7 +116,7 @@ Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does n
 
 | Action | Purpose | Key fields |
 | ------ | ------- | ---------- |
-| `lists` | List all lists | `scope` (prefix filter), `namespace` (`global`\|`*`\|name) |
+| `lists` | List all lists | `scope` (prefix filter), `project` (directory filter), `namespace` (`global`\|`*`\|name) |
 | `show` | Print a list's task tree | `list`, `format` (`tree`\|`flat`), `status_filter`, `detail` |
 | `create` | Create a list (or copy one) | `list`, `title`, `project_path`, `description`, `from`, `from_namespace`, `force` |
 | `add` | Add task(s) | `list`, `items[]`, `under` |
@@ -130,9 +130,11 @@ Isolation is enforced at the todo API, not as an OS sandbox. pi-subagents does n
 Field semantics:
 
 - Every action accepts `namespace` (`global`, a parent-assigned name, or `*` for parent discovery on `lists`). Omit it for the session's default: global when unbound, the bound namespace for a child. It is separate from the list path — never a path prefix.
+- `lists` accepts `project`: keep only lists whose `project_path` is that directory. `.` means the session's working directory, and any relative value resolves against it. A list pinned in a parent or child directory also matches, so a list at `/repo` is found while you are in `/repo/src`. Matching is segment-bounded (`/repo` never matches `/repo-old`) and done in JS, never with a SQL `LIKE`. The output header names the directory, and a trailer counts the lists that have no `project_path` and therefore could not match — a filtered listing never silently implies it is everything. Because the database is shared by every project, this is the way to ask *which lists belong to this repo*; omitting `project` still lists everything.
 - `detail` selects how much of the list comes back. Writes and `next` default to `brief`; `show` defaults to `full`. Brief mode keeps every task's line and id, inlines the detail of open tasks, collapses completed branches, and word-caps `project`/`goal` in the header (full mode keeps all of it).
 - `update` with an `id` edits the task: `text`, `note`, `status`, `priority`, `tags`, `description`. `cascade` pushes a status change to all descendants. `''` clears `note`/`description`, `[]` clears `tags`.
 - `update` without an `id` edits the list: `title`, `project_path`, `description`. `''` clears a field.
+- `project_path` is canonicalized on write: a relative value (`.`, `src/`) is resolved against the session's working directory and stored as an absolute path, so it keeps meaning the same directory when a later session reads it from somewhere else. Rows written before this behavior keep their loose form (`/repo/`, `.`, `~/repo`) and are normalized when compared.
 - `create` is idempotent, but it will not quietly rewrite a list. Applying a different non-empty `title`/`project_path`/`description` to a list that already has one is refused; repeat the call with `force: true` to confirm the overwrite (or use `update` without an `id` to change metadata deliberately). Filling a field that is currently empty never needs `force`.
 - `add` nests via `ref`/`underRef` (below) and attaches under an existing task with `under`.
 - `next` is read-only. It returns `next_task: null` when nothing matches (not an error) and never changes a task's status; mark it `in_progress` after picking it up. Its response is a **focus window**: the picked task with its full note/description, its ancestor chain, nearby siblings and its open children — pass `detail: "full"` for the whole tree instead.

@@ -12,6 +12,10 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
+import type {
+	AgentToolUpdateCallback,
+	ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type, type TUnsafe } from "typebox";
 
 import type {
@@ -36,6 +40,7 @@ import {
 	type TodoCaller,
 } from "./namespace.ts";
 import { parseListPath } from "./paths.ts";
+import { absoluteProjectPath, canonicalProjectPath, projectMatches } from "./project.ts";
 import {
 	DEFAULT_MAX_TREE_LINES,
 	countsOfTree,
@@ -95,6 +100,8 @@ export interface TodoParamsInput {
 	namespace?: string;
 	list?: string;
 	scope?: string;
+	/** (lists) Only lists whose project_path is this directory ("." = the session cwd). */
+	project?: string;
 	title?: string;
 	project_path?: string;
 	/** (create) Existing list to deep-copy into `list`; the whole list, no '#id'. */
@@ -204,6 +211,12 @@ export const TodoToolParams = Type.Object({
 		Type.String({
 			description:
 				"(lists) Filter by scope name or segment prefix, e.g. 'feature-auth' matches 'feature-auth' and 'feature-auth/tasks'.",
+		}),
+	),
+	project: Type.Optional(
+		Type.String({
+			description:
+				"(lists) Filter by project directory: only lists whose project_path is this directory ('.' = this session's working directory; a relative path resolves against it). A list pinned in a parent or child directory also matches. Omit to list every list.",
 		}),
 	),
 	title: Type.Optional(
@@ -368,6 +381,12 @@ interface ActionResult {
 	details: Record<string, unknown>;
 }
 
+/** What the session contributes to a call (the working directory, when pi supplies one). */
+export interface TodoEnv {
+	/** Session working directory: the base for a relative `project` filter. */
+	cwd?: string;
+}
+
 /** A resolved namespace plus the caller it was resolved for. */
 type CallScope = NamespaceResolution & { caller: TodoCaller };
 
@@ -384,6 +403,7 @@ export async function dispatchTodo(
 	db: TodoDb,
 	p: TodoParamsInput,
 	caller: TodoCaller = UNBOUND_CALLER,
+	env: TodoEnv = {},
 ): Promise<ActionResult> {
 	const ns: CallScope = { ...resolveNamespace(p.namespace, caller), caller };
 	if (ns.allNamespaces && p.action !== "lists") {
@@ -391,17 +411,22 @@ export async function dispatchTodo(
 			`The '${ALL_NAMESPACES}' namespace selector is only valid for action 'lists'. Omit 'namespace' or name a single namespace for '${p.action}'.`,
 		);
 	}
+	if (p.project !== undefined && p.action !== "lists") {
+		throw new Error(
+			`'project' only filters action 'lists'. To set a list's project directory, use 'project_path' (with 'create', or 'update' and no 'id').`,
+		);
+	}
 	switch (p.action) {
 		case "lists":
-			return doLists(db, p, ns);
+			return doLists(db, p, ns, env);
 		case "show":
 			return doShow(db, p, ns);
 		case "create":
-			return doCreate(db, p, ns);
+			return doCreate(db, p, ns, env);
 		case "add":
 			return doAdd(db, p, ns);
 		case "update":
-			return doUpdate(db, p, ns);
+			return doUpdate(db, p, ns, env);
 		case "move":
 			return doMove(db, p, ns);
 		case "delete":
@@ -592,22 +617,67 @@ function cascadeEffect(
 	return { changed, already, status };
 }
 
+/**
+ * Resolve the `lists` `project` filter to an absolute directory.
+ *
+ * `.` and any other relative value resolve against the session's working
+ * directory; with no session cwd (direct dispatch, scripts) a relative filter is
+ * an error rather than a silent full listing — the caller asked to narrow.
+ */
+function resolveProjectFilter(
+	p: TodoParamsInput,
+	env: TodoEnv,
+): string | undefined {
+	if (p.project === undefined) return undefined;
+	const raw = p.project.trim();
+	if (!raw) {
+		throw new Error(
+			"'project' is empty — pass a directory ('.' for this session's working directory), or omit it to list every list.",
+		);
+	}
+	const absolute = absoluteProjectPath(raw, env.cwd);
+	if (!absolute) {
+		throw new Error(
+			`'project' ('${raw}') is relative and this call has no session working directory to resolve it against. Pass an absolute path, or omit 'project'.`,
+		);
+	}
+	return absolute;
+}
+
 async function doLists(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 ): Promise<ActionResult> {
-	const lists = db.txn(() =>
-		ns.allNamespaces
-			? db.getListsAllNamespaces(p.scope?.trim() || undefined)
-			: db.getLists(p.scope?.trim() || undefined, ns.namespace),
-	);
-	const text = renderLists(lists);
+	const scopePrefix = p.scope?.trim() || undefined;
+	const projectFilter = resolveProjectFilter(p, env);
+	const { lists, unpinned } = db.txn(() => {
+		const all = ns.allNamespaces
+			? db.getListsAllNamespaces(scopePrefix)
+			: db.getLists(scopePrefix, ns.namespace);
+		if (projectFilter === undefined) return { lists: all, unpinned: 0 };
+		// Match in JS (never LIKE): stored paths are agent-typed and the filter is
+		// user text, so a wildcard would escape. See ./project.ts.
+		return {
+			lists: all.filter((l) =>
+				projectMatches(l.project_path, projectFilter, env.cwd),
+			),
+			// Lists with no project_path cannot match any directory; count them so a
+			// filtered result never implies "that's all there is".
+			unpinned: all.filter((l) => !l.project_path.trim()).length,
+		};
+	});
+	const text = renderLists(lists, { project: projectFilter, unpinned });
 	const details: Record<string, unknown> = {
 		action: "lists",
 		namespace: ns.allNamespaces ? ALL_NAMESPACES : namespaceLabel(ns.namespace),
 		lists: lists.map(listSummaryToDetails),
 	};
+	if (projectFilter !== undefined) {
+		details.project = projectFilter;
+		details.without_project_path = unpinned;
+	}
 	return ok(details, { text, elided: false });
 }
 
@@ -668,6 +738,7 @@ async function doCreate(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 ): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
 	if (p.from === undefined) {
@@ -676,15 +747,16 @@ async function doCreate(
 				"'from_namespace' only selects the namespace of a copied source list — pass 'from' with the source list path.",
 			);
 		}
-		return doEnsureList(db, p, ns, { scope, name, path });
+		return doEnsureList(db, p, ns, env, { scope, name, path });
 	}
-	return doCopyList(db, p, ns, p.from, { scope, name, path });
+	return doCopyList(db, p, ns, env, p.from, { scope, name, path });
 }
 
 async function doEnsureList(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 	target: { scope: string; name: string; path: string },
 ): Promise<ActionResult> {
 	const { scope, name, path } = target;
@@ -712,7 +784,9 @@ async function doEnsureList(
 			name,
 			{
 				title: p.title ?? null,
-				project_path: p.project_path ?? null,
+				// Stored absolute so a relative path can't be re-read as a different
+				// directory by a later session.
+				project_path: canonicalProjectPath(p.project_path ?? null, env.cwd) ?? null,
 				description: p.description ?? null,
 			},
 			ns.namespace,
@@ -763,6 +837,7 @@ async function doCopyList(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 	from: string,
 	target: { scope: string; name: string; path: string },
 ): Promise<ActionResult> {
@@ -808,7 +883,8 @@ async function doCopyList(
 			name: target.name,
 			meta: {
 				title: p.title,
-				project_path: p.project_path,
+				// undefined keeps the copied value; a relative override is canonicalized.
+				project_path: canonicalProjectPath(p.project_path, env.cwd),
 				description: p.description,
 			},
 		});
@@ -959,12 +1035,13 @@ async function doUpdate(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 ): Promise<ActionResult> {
 	const { scope, name, path } = requireListPath(p);
 
 	// No id → list-level metadata update (title / project_path / description).
 	if (p.id === undefined || p.id === null) {
-		return doUpdateListMeta(db, p, ns, scope, name, path);
+		return doUpdateListMeta(db, p, ns, env, scope, name, path);
 	}
 	if (p.title !== undefined || p.project_path !== undefined) {
 		throw new Error(
@@ -1069,6 +1146,7 @@ async function doUpdateListMeta(
 	db: TodoDb,
 	p: TodoParamsInput,
 	ns: CallScope,
+	env: TodoEnv,
 	scope: string,
 	name: string,
 	path: string,
@@ -1091,7 +1169,7 @@ async function doUpdateListMeta(
 		const before = snapshotMeta(list);
 		db.setListMeta(list.id, {
 			title: p.title,
-			project_path: p.project_path,
+			project_path: canonicalProjectPath(p.project_path, env.cwd),
 			description: p.description,
 		});
 		const updated = db.getList(scope, name, ns.namespace) ?? list;
@@ -1585,6 +1663,8 @@ export function buildTodoToolDef(deps: TodoToolDeps) {
 			_toolCallId: string,
 			params: TodoParamsInput,
 			signal: AbortSignal | undefined,
+			_onUpdate?: AgentToolUpdateCallback<Record<string, unknown>>,
+			ctx?: ExtensionToolContext,
 		): Promise<{
 			content: { type: "text"; text: string }[];
 			details: Record<string, unknown>;
@@ -1592,7 +1672,9 @@ export function buildTodoToolDef(deps: TodoToolDeps) {
 			if (signal?.aborted)
 				return { content: [{ type: "text", text: "Cancelled" }], details: {} };
 			const db = await deps.getDb();
-			const result = await dispatchTodo(db, params, caller);
+			// pi supplies the session context here; a direct dispatch (tests,
+			// scripts) has none, which only matters for a relative 'project' filter.
+			const result = await dispatchTodo(db, params, caller, { cwd: ctx?.cwd });
 			return {
 				content: [{ type: "text", text: result.content.text }],
 				details: result.details,
@@ -1634,7 +1716,7 @@ function buildDescription(caller: TodoCaller): string {
 		namespaceParagraph,
 		"",
 		"ACTIONS (the 'action' field selects one; relevant fields shown):",
-		"- lists: list TODO lists in your default namespace. Optional 'scope' filters by scope name or segment prefix; optional 'namespace' selects another namespace ('global', a namespace the parent assigned, or '*' to see all of them).",
+		"- lists: list TODO lists in your default namespace. Optional 'scope' filters by scope name or segment prefix; optional 'project' keeps only lists whose project_path is that directory ('.' = this session's working directory; a list pinned in a parent or child directory also matches) — this is how you ask 'what lists belong to THIS repo?', which matters because the DB is shared across projects; optional 'namespace' selects another namespace ('global', a namespace the parent assigned, or '*' to see all of them). The header names a project filter and a trailer counts the lists with no project_path it could not match.",
 		"- show {list}: view a list's tasks as a tree. Optional 'format' (tree|flat), 'status_filter', 'detail' ('full' = default: every task with its whole note and description; 'brief' = open tasks with their notes, completed branches collapsed).",
 		"- create {list} [title] [project_path] [description]: create/ensure a list exists. title = human label; project_path = project directory the work belongs to; description = the overall goal. All three are echoed in every read of the list (including subtree views). On a list that ALREADY exists, create refuses to replace a non-empty title/project_path/description unless you pass force:true (a deliberate repeat); prefer update without an 'id' for metadata changes. With 'from' it instead COPIES that whole existing source list (add 'from_namespace' when the source lives in another namespace, e.g. 'global') into the new destination list: independent copy, fresh task ids, same tree order and task fields, source untouched, and an existing destination is refused. When copying, title/project_path/description override the copied values ('' clears one).",
 		"- add {list, items[, under]}: add task(s). 'items' is an array; each may have 'priority' (critical|high|medium|low, default medium). Nest via ref/underRef. 'under'=existing task id in THIS list to attach top-level items under.",

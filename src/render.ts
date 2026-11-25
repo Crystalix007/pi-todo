@@ -687,12 +687,40 @@ export function renderFocus(
 	return { text: lines.join("\n"), elided: cut > 0 };
 }
 
+/** How a `lists` call narrowed itself, so the header can say what it shows. */
+export interface ListsOpts {
+	/** Absolute project directory the list was filtered by, when the caller asked. */
+	project?: string;
+	/** Lists in scope but with no project_path — hidden by the filter, never silently. */
+	unpinned?: number;
+}
+
+/** "1 list" / "3 lists" — the note below reads as a sentence either way. */
+function pluralList(n: number): string {
+	return n === 1 ? "1 list" : `${n} lists`;
+}
+
+/**
+ * Trailer naming what a project filter excluded. A filter that stays quiet about
+ * the lists it could not match reads as "this directory has nothing else".
+ */
+function hiddenNote(unpinned: number): string {
+	if (unpinned <= 0) return "";
+	return `\n  (${pluralList(unpinned)} with no project_path ${unpinned === 1 ? "is" : "are"} hidden by this filter — run 'lists' without 'project' to see ${unpinned === 1 ? "it" : "them"})`;
+}
+
 /** Render the list-of-lists to plain text. */
-export function renderLists(lists: ListSummary[]): string {
+export function renderLists(lists: ListSummary[], opts: ListsOpts = {}): string {
+	const project = opts.project ? sanitize(opts.project) : "";
+	const note = hiddenNote(opts.unpinned ?? 0);
 	if (lists.length === 0) {
-		return "No TODO lists yet. Create one with action 'create' or 'add' (lists auto-create on first add).";
+		const head = project ? `No TODO lists in ${project}.` : "No TODO lists yet.";
+		const create = "Create one with action 'create' or 'add' (lists auto-create on first add).";
+		// The empty case puts the note on its own line, without the indent.
+		return `${head} ${create}${note.replace(/^\n\s+/, "\n")}`;
 	}
-	const lines = [`TODO lists (${lists.length}):`];
+	const where = project ? ` in ${project}` : "";
+	const lines = [`TODO lists${where} (${lists.length}):`];
 	for (const l of lists) {
 		const titlePart = l.title ? `  (${l.title})` : "";
 		const projPart = l.project_path
@@ -707,7 +735,7 @@ export function renderLists(lists: ListSummary[]): string {
 			`  ${l.path}${titlePart}${projPart}${nsPart}  ·  ${l.counts.done}/${l.counts.total} done`,
 		);
 	}
-	return lines.join("\n");
+	return `${lines.join("\n")}${note}`;
 }
 
 // ---------------------------------------------------------------------------

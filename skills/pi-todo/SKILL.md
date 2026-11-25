@@ -53,7 +53,7 @@ Optional multi-line `description` for context beyond the title. Shown as indente
 
 Append `#task-id` to a list path to scope to a specific task's subtree (the task itself and its descendants):
 
-```
+```js
 list: "feature/auth#7"       // show only task #7 and its children
 list: "feature/auth#7"       // next: find tasks within that subtree
 ```
@@ -63,6 +63,22 @@ Useful for assigning a subagent a focused subset of work.
 ### Lists
 
 Named `$scope/$name` (scoped) or just `$name` (root). Auto-created on first `add`. `create` on a list that already exists refuses to replace a non-empty `title`/`project_path`/`description` unless you repeat it with `force: true`; to change metadata on purpose, use `update` without an `id`.
+
+### Project filter (`lists project`)
+
+The DB is shared across projects, so `lists` takes a `project` directory filter — the way to answer "which lists belong to THIS repo".
+
+```js
+{ action: "lists", project: "." }                 // this session's working directory
+{ action: "lists", project: "/repo", scope: "auth" }  // composed with a scope prefix
+{ action: "lists", project: ".", namespace: "*" }    // this repo across every namespace
+```
+
+- `.` and other relative values resolve against the session's cwd; absolute paths pass through; `~` expands.
+- A list pinned in a parent or child directory also matches (a list at `/repo` is found from `/repo/src`). Matching is segment-bounded: `/repo` never matches `/repo-old`.
+- The header names the directory (`TODO lists in /repo (3):`), and a trailer counts the lists with no `project_path` that the filter could not match — so a narrowed result never reads as "that's everything".
+- `project_path` is stored absolute (a relative value is resolved on write), so a pinned list keeps meaning the same directory across sessions.
+- A relative `project` with no session cwd (direct dispatch, scripts) is an error rather than a silent full listing. `project` is rejected outside action `lists`; to set a list's directory use `project_path`.
 
 ### Namespaces (subagent isolation)
 
